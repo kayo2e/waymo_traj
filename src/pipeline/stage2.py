@@ -9,7 +9,7 @@ bridge_stage2_to_stage3  — Mamba context + risk labels → Stage 3 package
 import torch
 import torch.nn as nn
 
-from src.models.encoders import TambaMambaEncoder, JointPolylineEncoder
+from waymo_traj.src.models.encoders import TambaMambaEncoder, JointPolylineEncoder
 
 
 def bridge_stage1_to_stage2(stage1_output: dict, waymo_raw_data) -> dict:
