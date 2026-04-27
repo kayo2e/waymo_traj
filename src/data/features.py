@@ -138,3 +138,68 @@ def extract_features(scenario):
         "gt_keypoints":   gt_keypoints,    # [3, 2]
         "kp_valid":       kp_valid,        # [3]
     }
+
+
+# ── Risk label constants ──────────────────────────────────────────────────────
+_PROXIMITY_M     = 7.0    # 근접 판단 거리 (m)
+_HARD_BRAKE_MS2  = -6.0   # 급정지 가속도 임계값 (m/s²)
+_LANE_CHG_VEL    = 1.0    # 차선변경 판단 횡방향 속도 (m/s)
+_DT              = 0.1    # WOMD 샘플링 주기 (10 Hz)
+
+
+def extract_risk_label(scenario) -> np.ndarray:
+    """
+    에고 차량의 T_HIST 구간에서 위험 이벤트를 이진 레이블로 추출.
+
+    Returns [3] float32
+      [0] Proximity  — 임의 에이전트와 거리 <= 7 m
+      [1] HardBrake  — 종방향 감속도 <= -6.0 m/s²
+      [2] LaneChange — 횡방향 속도 > 1.0 m/s (차선변경 근사)
+    """
+    t0      = scenario.current_time_index
+    sdc_idx = scenario.sdc_track_index
+    label   = np.zeros(3, dtype=np.float32)
+    ego_trk = scenario.tracks[sdc_idx]
+
+    # ── [0] Proximity ─────────────────────────────────────────────────────────
+    for t in range(max(0, t0 - T_HIST + 1), t0 + 1):
+        es = ego_trk.states[t]
+        if not es.valid:
+            continue
+        for i, track in enumerate(scenario.tracks):
+            if i == sdc_idx:
+                continue
+            s = track.states[t]
+            if not s.valid:
+                continue
+            if np.hypot(s.center_x - es.center_x, s.center_y - es.center_y) <= _PROXIMITY_M:
+                label[0] = 1.0
+                break
+        if label[0]:
+            break
+
+    # ── [1] HardBrake  [2] LaneChange ────────────────────────────────────────
+    valid_states = [
+        ego_trk.states[t]
+        for t in range(max(0, t0 - T_HIST + 1), t0 + 1)
+        if ego_trk.states[t].valid
+    ]
+    for i in range(1, len(valid_states)):
+        prev, curr = valid_states[i - 1], valid_states[i]
+        cos_h = float(np.cos(curr.heading))
+        sin_h = float(np.sin(curr.heading))
+
+        # 종방향 속도 변화 → 가속도
+        v_long_cur  = curr.velocity_x * cos_h + curr.velocity_y * sin_h
+        v_long_prev = prev.velocity_x * cos_h + prev.velocity_y * sin_h
+        if (v_long_cur - v_long_prev) / _DT <= _HARD_BRAKE_MS2:
+            label[1] = 1.0
+
+        # 횡방향 속도
+        if abs(-curr.velocity_x * sin_h + curr.velocity_y * cos_h) > _LANE_CHG_VEL:
+            label[2] = 1.0
+
+        if label[1] and label[2]:
+            break
+
+    return label
