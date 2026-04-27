@@ -13,7 +13,7 @@ Ego token (index 0) + K mode queries → K keypoint sets + K trajectories.
 import torch
 import torch.nn as nn
 
-from waymo_traj.src.models.encoders import TambaMambaEncoder, JointPolylineEncoder
+from src.models.encoders import TambaMambaEncoder, JointPolylineEncoder
 
 
 class WaymoMotionModel(nn.Module):
