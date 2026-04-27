@@ -52,8 +52,10 @@ def parse_args():
     p.add_argument("--wd",        type=float, default=1e-4, help="weight decay")
     p.add_argument("--lam",       type=float, default=0.5,  help="L_risk 가중치")
     p.add_argument("--device",    type=str,   default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--log_every", type=int,   default=50)
-    p.add_argument("--resume",    type=str,   default=None)
+    p.add_argument("--log_every",      type=int,  default=50)
+    p.add_argument("--resume",         type=str,  default=None)
+    p.add_argument("--max_scenarios",  type=int,  default=None,
+                   help="에폭당 최대 시나리오 수 (빠른 테스트용)")
     return p.parse_args()
 
 
@@ -85,7 +87,7 @@ def _prep_inputs(feats: dict, device):
 
 
 def run_one_epoch(model, optimizer, tfrecord_paths, device, train,
-                  lam=0.5, log_every=50):
+                  lam=0.5, log_every=50, max_scenarios=None):
     """
     Returns (avg_loss, avg_minADE, avg_minFDE, avg_MR, n_scenarios)
     """
@@ -98,6 +100,9 @@ def run_one_epoch(model, optimizer, tfrecord_paths, device, train,
     t_start = time.time()
 
     for raw_bytes in iter_tfrecords(tfrecord_paths):
+        if max_scenarios and n_ok >= max_scenarios:
+            break
+
         sc = scenario_pb2.Scenario()
         sc.ParseFromString(raw_bytes)
 
@@ -220,7 +225,8 @@ def main():
         model.train()
         tr_loss, tr_ade, tr_fde, tr_mr, n_tr = run_one_epoch(
             model, optimizer, TRAIN_PATHS, device, train=True,
-            lam=args.lam, log_every=args.log_every
+            lam=args.lam, log_every=args.log_every,
+            max_scenarios=args.max_scenarios,
         )
         print(f"  [train] DONE  loss={tr_loss:.4f}  "
               f"minADE={tr_ade:.3f}m  minFDE={tr_fde:.3f}m  MR={tr_mr:.3f}  "
@@ -230,7 +236,8 @@ def main():
         with torch.no_grad():
             ev_loss, ev_ade, ev_fde, ev_mr, n_ev = run_one_epoch(
                 model, None, EVAL_PATHS, device, train=False,
-                lam=args.lam, log_every=args.log_every
+                lam=args.lam, log_every=args.log_every,
+                max_scenarios=args.max_scenarios,
             )
         print(f"  [eval]  DONE  loss={ev_loss:.4f}  "
               f"minADE={ev_ade:.3f}m  minFDE={ev_fde:.3f}m  MR={ev_mr:.3f}  "
