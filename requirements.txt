@@ -1,0 +1,13 @@
+torch>=2.0.0
+transformers>=4.40.0
+accelerate>=0.27.0
+numpy>=1.24.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+google-generativeai>=0.5.0
+
+# Waymo Open Dataset (protobuf-compatible version)
+# Install with:
+#   pip install waymo-open-dataset-tf-2-11-0
+# Note: requires PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+#       (set automatically by train.py / evaluate.py)
