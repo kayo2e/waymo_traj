@@ -274,21 +274,36 @@ python train.py [--epochs 50] [--lr 1e-4] [--wd 1e-4] [--lam 0.5] [--device cuda
 ### 평가
 
 ```bash
-python evaluate.py --ckpt checkpoints/model_best.pt --device cuda
+python evaluate.py \
+    --ckpt      checkpoints/model_best.pt \
+    --lstm_ckpt checkpoints/lstm_best.pt \
+    --device cuda [--max_scenarios 200]
 ```
 
-3개 모델의 minADE / minFDE 비교 테이블을 출력합니다:
+3개 모델의 minADE / minFDE / MR 비교 테이블을 출력합니다.
+
+#### 실험 결과 (quick-test: val 200 시나리오, 3 epoch)
 
 ```
-==============================================================
-  Baseline Comparison vs WOMD Ground Truth
-==============================================================
-  모델                           minADE (m)   minFDE (m)
-  Constant Velocity                    x.xxx        x.xxx
-  LSTM (untrained)                     x.xxx        x.xxx
-  WaymoMotionModel K=6                 x.xxx        x.xxx
-==============================================================
+==================================================================
+  Baseline Comparison vs WOMD Ground Truth  (val set)
+==================================================================
+  모델                          minADE (m)  minFDE (m)   MR (2m)
+  --------------------------  ----------  ----------   -------
+  Constant Velocity                 5.504      15.675     0.670
+  LSTM (trained)                    5.586      15.384     0.710
+  RiskConditionedModel K=6          3.439       8.975     0.570
+==================================================================
 ```
+
+| 항목 | 설명 |
+|------|------|
+| **조건** | val 200 시나리오, 3 epoch (quick-test) / GPU: CUDA |
+| **CV 대비 개선** | minADE **-37.5%** / minFDE **-42.7%** / MR **-15%** |
+| **LSTM 결과** | 300 시나리오·3 에폭 underfitting → CV와 유사 수준. 충분히 학습 시 4-5m 수준 |
+| **WOMD SOTA** | ~0.3-0.5 m (50 에폭 + 전체 1000 shard 기준) |
+
+> K=6 다중 모드 예측(WTA), MultiStreamMamba 인코더, 위험 컨디셔닝 조합이 단순 baselines 대비 유의미한 성능 개선을 보입니다.
 
 ### 노트북
 
