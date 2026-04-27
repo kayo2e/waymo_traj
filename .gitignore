@@ -1,0 +1,34 @@
+# Data (too large for GitHub)
+waymo-motion-v1_3_0/
+
+# Checkpoints
+checkpoints/
+
+# Generated outputs
+trajectory_comparison.png
+*.png
+*.jpg
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
