@@ -3,7 +3,7 @@ Evaluation script: WaymoMotionModel vs Constant Velocity vs LSTM baselines.
 
 Run:
     cd /home/dtlab/gy/waymo_traj
-    python evaluate.py [--ckpt checkpoints/model_best.pt] [--device cuda]
+    python waymo_traj/evaluate.py [--ckpt waymo_traj/checkpoints/model_best.pt] [--device cuda]
 """
 
 import argparse
@@ -19,19 +19,19 @@ import torch
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
-from waymo_traj.src.data.tfrecord       import iter_tfrecords
-from waymo_traj.src.data.features       import extract_features
-from waymo_traj.src.models.motion_model import WaymoMotionModel
-from waymo_traj.src.models.baselines    import ConstantVelocityBaseline, LSTMBaseline
-from waymo_traj.src.eval.metrics        import compute_minADE_FDE
+from src.data.tfrecord       import iter_tfrecords
+from src.data.features       import extract_features
+from src.models.motion_model import WaymoMotionModel
+from src.models.baselines    import ConstantVelocityBaseline, LSTMBaseline
+from src.eval.metrics        import compute_minADE_FDE
 
 
-def _shard(n):
-    return os.path.join(ROOT, "waymo-motion-v1_3_0/train",
-                        f"training.tfrecord-{n:05d}-of-01000")
+def _test_shard(n):
+    return os.path.join(ROOT, "waymo-motion-v1_3_0", "test",
+                        f"testing.tfrecord-{n:05d}-of-00150")
 
 
-EVAL_PATHS = [_shard(i) for i in range(6, 8)]   # 00006-00007
+EVAL_PATHS = [_test_shard(i) for i in range(8)]   # 00000-00007
 
 
 def parse_args():
@@ -47,7 +47,7 @@ def main():
     args   = parse_args()
     device = torch.device(args.device)
     print(f"Device : {device}")
-    print(f"Eval   : shards 00006-00007  ({len(EVAL_PATHS)} files)")
+    print(f"Eval   : test shards 00000-00007  ({len(EVAL_PATHS)} files)")
     print(f"Ckpt   : {args.ckpt}")
     print()
 

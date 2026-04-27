@@ -1,12 +1,12 @@
 """
 Training script for WaymoMotionModel.
 
-Train : training.tfrecord-00000~00005-of-01000  (6 shards, ~3000 scenarios)
-Eval  : training.tfrecord-00006~00007-of-01000  (2 shards, ~1000 scenarios)
+Train : training.tfrecord-00000~00049-of-01000  (50 shards)
+Eval  : validation.tfrecord-00000~00007-of-00150 (8 shards)
 
 Run:
     cd /home/dtlab/gy/waymo_traj
-    python train.py [--epochs 10] [--lr 1e-4] [--device cuda]
+    python waymo_traj/train.py [--epochs 10] [--lr 1e-4] [--device cuda]
 
 TFRecord은 TF 없이 raw binary로 직접 파싱합니다 (protobuf 버전 충돌 우회).
 """
@@ -23,22 +23,25 @@ import torch
 import torch.nn.functional as F
 
 # ── paths ────────────────────────────────────────────────────────────────────
-ROOT     = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(ROOT, "waymo-motion-v1_3_0/train")
+ROOT      = os.path.dirname(os.path.abspath(__file__))
+DATA_ROOT = os.path.join(ROOT, "waymo-motion-v1_3_0")
 
 sys.path.insert(0, ROOT)
 
-from waymo_traj.src.data.tfrecord    import iter_tfrecords
-from waymo_traj.src.data.features    import extract_features
-from waymo_traj.src.models.motion_model import WaymoMotionModel
+from src.data.tfrecord    import iter_tfrecords
+from src.data.features    import extract_features
+from src.models.motion_model import WaymoMotionModel
 
 
-def _shard(n):
-    return os.path.join(DATA_DIR, f"training.tfrecord-{n:05d}-of-01000")
+def _train_shard(n):
+    return os.path.join(DATA_ROOT, "train", f"training.tfrecord-{n:05d}-of-01000")
+
+def _val_shard(n):
+    return os.path.join(DATA_ROOT, "val", f"validation.tfrecord-{n:05d}-of-00150")
 
 
-TRAIN_PATHS = [_shard(i) for i in range(6)]    # 00000-00005
-EVAL_PATHS  = [_shard(i) for i in range(6, 8)] # 00006-00007
+TRAIN_PATHS = [_train_shard(i) for i in range(50)]  # 00000-00049
+EVAL_PATHS  = [_val_shard(i)   for i in range(8)]   # 00000-00007
 CKPT_DIR    = os.path.join(ROOT, "checkpoints")
 os.makedirs(CKPT_DIR, exist_ok=True)
 
@@ -152,8 +155,8 @@ def main():
     args   = parse_args()
     device = torch.device(args.device)
     print(f"Device : {device}")
-    print(f"Train  : shards 00000-00005  ({len(TRAIN_PATHS)} files)")
-    print(f"Eval   : shards 00006-00007  ({len(EVAL_PATHS)} files)")
+    print(f"Train  : training   shards 00000-00049  ({len(TRAIN_PATHS)} files)")
+    print(f"Eval   : validation shards 00000-00007  ({len(EVAL_PATHS)} files)")
     print(f"Epochs : {args.epochs}  lr={args.lr}")
     print()
 
