@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-# waymo_traj
-=======
 # Waymo Trajectory Prediction with Mamba
 
 Autonomous vehicle trajectory prediction on the [Waymo Open Motion Dataset (WOMD) v1.3.0](https://waymo.com/open/data/motion/), using a 3-stage pipeline: risk-aware scene understanding → Mamba-based multi-agent encoding → Gemini-assisted trajectory refinement.
@@ -221,4 +218,3 @@ Set `GOOGLE_API_KEY` environment variable before use.
 ## License
 
 This project uses the Waymo Open Dataset under its [Terms of Service](https://waymo.com/open/terms/). Model code is MIT licensed.
->>>>>>> 122ce15 (Initial commit: Add waymo trajectory project)
