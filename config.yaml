@@ -1,0 +1,28 @@
+model:
+  agent_dim: 6          # 에이전트 피처 차원 (x, y, vx, vy, cos_h, sin_h)
+  map_dim: 3            # 맵 피처 차원 (x, y, z)
+  d_model: 128          # Mamba hidden dimension
+  n_layers: 2           # 각 Mamba 스트림의 레이어 수
+  K: 6                  # 궤적 가설 수
+
+data:
+  n_agents: 32          # 에이전트 슬롯 수 (ego 포함)
+  t_hist: 11            # 과거 타임스텝 (1.1초 @ 10Hz)
+  n_map: 50             # 맵 폴리라인 수
+  n_traf: 6             # 신호등 수
+  n_future: 80          # 미래 예측 스텝 (8초 @ 10Hz)
+  map_tokens: 56        # n_map + n_traf (SceneMamba 입력 길이)
+
+train:
+  epochs: 50
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  scheduler: cosine     # cosine | step
+  log_every: 50         # N 시나리오마다 로그 출력
+
+loss:
+  lam: 0.5              # L_total = L_traj + lam * L_risk
+  kp_delta: 2.0         # Huber loss delta (키포인트)
+
+eval:
+  mr_threshold: 2.0     # Miss Rate 판정 거리 (m)
