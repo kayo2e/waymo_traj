@@ -106,9 +106,10 @@ class RiskConditionedModel(nn.Module):
     위험 조건부 K=6 궤적 예측 모델.
 
     forward 입력:
-      ego_hist      : [B, T,  6]   에고 과거 궤적
-      social_agents : [B, N,  6]   주변 에이전트 (T 차원 평균 등)
-      map_tokens    : [B, L,  3]   맵 폴리라인 + 신호 (L = N_MAP + N_TRAF)
+      ego_hist      : [B, T,  6]        에고 과거 시계열
+      social_agents : [B, N,  T,  6]    주변 에이전트별 시계열
+      map_scene     : [B, 50, 10, 3]    차선별 10개 폴리라인 포인트
+      traf          : [B, 6,  1]        신호등 상태
       risk_label    : [B, 3] float — 학습 시 GT 이진 레이블,
                                       추론 시 None → 자체 예측값 사용
 
@@ -155,11 +156,11 @@ class RiskConditionedModel(nn.Module):
             nn.Linear(256, 80 * 2),
         )
 
-    def forward(self, ego_hist, social_agents, map_tokens, risk_label=None):
+    def forward(self, ego_hist, social_agents, map_scene, traf, risk_label=None):
         B = ego_hist.shape[0]
 
         # ── 1. 씬 인코딩 ───────────────────────────────────────────────────────
-        global_feat = self.encoder(ego_hist, social_agents, map_tokens)  # [B, D]
+        global_feat = self.encoder(ego_hist, social_agents, map_scene, traf)  # [B, D]
 
         # ── 2. 위험 분류 ───────────────────────────────────────────────────────
         risk_logits = self.risk_head(global_feat)                         # [B, 3]

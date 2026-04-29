@@ -69,15 +69,15 @@ def _prep_inputs(feats, device):
     agent = feats["agent_tensor"]
     scene = feats["scene_tensor"]
     traf  = feats["traffic_tensor"]
-    ego_hist = agent[0:1]
-    social   = agent[1:].mean(axis=1)[None]
-    map_poly = scene.max(axis=1)
-    traf_pad = np.pad(traf, [(0, 0), (0, 2)])
-    map_tok  = np.concatenate([map_poly, traf_pad], axis=0)[None]
+    ego_hist  = agent[0:1]
+    social    = agent[1:][None]
+    map_scene = scene[None]
+    traf_t    = traf[None]
     return (
         torch.from_numpy(ego_hist).to(device),
         torch.from_numpy(social).to(device),
-        torch.from_numpy(map_tok).to(device),
+        torch.from_numpy(map_scene).to(device),
+        torch.from_numpy(traf_t).to(device),
     )
 
 
@@ -218,9 +218,9 @@ def main():
     with torch.no_grad():
         lstm_pred = lstm_model(ego_xy)[0].cpu().numpy()
 
-    ego_h, soc, map_tok = _prep_inputs(feats, device)
+    ego_h, soc, map_scene, traf = _prep_inputs(feats, device)
     with torch.no_grad():
-        out = mm_model(ego_h, soc, map_tok, risk_label=None)
+        out = mm_model(ego_h, soc, map_scene, traf, risk_label=None)
     mm_pred = out["trajectory"][0].cpu().numpy()   # [K,80,2]
     bk = best_mode_idx(mm_pred, gt_traj, gt_valid)
 

@@ -14,8 +14,6 @@ import os
 import sys
 import time
 
-import numpy as np
-
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 import torch
@@ -63,26 +61,26 @@ def _prep_inputs(feats: dict, device):
     """
     extract_features 출력을 RiskConditionedModel 입력 형식으로 변환.
 
-    Returns (ego_hist, social_agents, map_tokens) — 각각 [1, *, *] 텐서
-      ego_hist      [1, 11, 6]
-      social_agents [1, 31, 6]  (T_HIST 평균)
-      map_tokens    [1, 56, 3]  (map 50 + traffic 6, max-pool over pts)
+    Returns (ego_hist, social_agents, map_scene, traf)
+      ego_hist      [1, 11, 6]       에고 시계열
+      social_agents [1, 31, 11, 6]   에이전트별 전체 시계열 (JointPolylineEncoder용)
+      map_scene     [1, 50, 10, 3]   차선별 폴리라인 포인트 (JointPolylineEncoder용)
+      traf          [1, 6,  1]       신호등 상태
     """
     agent = feats["agent_tensor"]    # [32, 11, 6]
     scene = feats["scene_tensor"]    # [50, 10, 3]
     traf  = feats["traffic_tensor"]  # [6, 1]
 
-    ego_hist = agent[0:1]                      # [1, 11, 6]
-    social   = agent[1:].mean(axis=1)[None]    # [1, 31, 6]
-
-    map_poly  = scene.max(axis=1)              # [50, 3]
-    traf_pad  = np.pad(traf, [(0, 0), (0, 2)])  # [6, 3]
-    map_tok   = np.concatenate([map_poly, traf_pad], axis=0)[None]  # [1, 56, 3]
+    ego_hist  = agent[0:1]           # [1, 11, 6]
+    social    = agent[1:][None]      # [1, 31, 11, 6]  — 시계열 보존
+    map_scene = scene[None]          # [1, 50, 10, 3]  — 폴리라인 형상 보존
+    traf_t    = traf[None]           # [1, 6, 1]
 
     return (
         torch.from_numpy(ego_hist).to(device),
         torch.from_numpy(social).to(device),
-        torch.from_numpy(map_tok).to(device),
+        torch.from_numpy(map_scene).to(device),
+        torch.from_numpy(traf_t).to(device),
     )
 
 
@@ -115,7 +113,7 @@ def run_one_epoch(model, optimizer, tfrecord_paths, device, train,
         if not feats["gt_valid"].any():
             continue
 
-        ego_hist, social, map_tok = _prep_inputs(feats, device)
+        ego_hist, social, map_scene, traf = _prep_inputs(feats, device)
 
         risk_gt = torch.from_numpy(risk_label_np).unsqueeze(0).to(device)  # [1, 3]
 
@@ -125,7 +123,7 @@ def run_one_epoch(model, optimizer, tfrecord_paths, device, train,
         gt_valid = torch.from_numpy(feats["gt_valid"]).to(device)      # [80]
 
         # ── forward ──────────────────────────────────────────────────────────
-        out       = model(ego_hist, social, map_tok, risk_label=risk_gt if train else None)
+        out       = model(ego_hist, social, map_scene, traf, risk_label=risk_gt if train else None)
         pred_kp   = out["keypoints"][0]     # [K, 3, 2]
         pred_traj = out["trajectory"][0]    # [K, 80, 2]
         risk_logits = out["risk_logits"][0] # [3]
