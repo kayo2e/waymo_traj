@@ -21,24 +21,27 @@ from src.eval.metrics import compute_minADE_FDE, compute_MR
 import numpy as np
 
 # ── 하이퍼파라미터 ────────────────────────────────────────────────────────────
-B        = 2      # 배치 크기
-T_HIST   = 11     # 과거 타임스텝
-N_SOCIAL = 31     # 주변 에이전트 수
-N_MAP    = 56     # 맵 토큰 수 (50 폴리라인 + 6 신호)
+B         = 2      # 배치 크기
+T_HIST    = 11     # 과거 타임스텝
+N_SOCIAL  = 31     # 주변 에이전트 수
+N_MAP     = 50     # 맵 폴리라인 수
+N_MAP_PTS = 10     # 폴리라인당 포인트 수
+N_TRAF    = 6      # 신호등 수
 AGENT_DIM = 6
 MAP_DIM   = 3
-D_MODEL  = 128
-K        = 6
-LAM      = 0.5
+D_MODEL   = 128
+K         = 6
+LAM       = 0.5
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}\n")
 
 # ── 더미 입력 생성 ─────────────────────────────────────────────────────────────
 torch.manual_seed(42)
-ego_hist      = torch.randn(B, T_HIST,   AGENT_DIM, device=device)
-social_agents = torch.randn(B, N_SOCIAL, AGENT_DIM, device=device)
-map_tokens    = torch.randn(B, N_MAP,    MAP_DIM,   device=device)
+ego_hist      = torch.randn(B, T_HIST,   AGENT_DIM,           device=device)
+social_agents = torch.randn(B, N_SOCIAL, T_HIST,   AGENT_DIM, device=device)
+map_scene     = torch.randn(B, N_MAP,    N_MAP_PTS, MAP_DIM,   device=device)
+traf          = torch.randn(B, N_TRAF,   1,                    device=device)
 risk_label    = torch.randint(0, 2, (B, 3), device=device).float()  # 이진 GT
 
 gt_traj  = torch.randn(B, 80, 2, device=device)
@@ -57,7 +60,7 @@ print(f"파라미터 수: {n_params:,}")
 
 # ── [1] Forward (학습 모드 — risk_label 제공) ─────────────────────────────────
 model.train()
-out = model(ego_hist, social_agents, map_tokens, risk_label=risk_label)
+out = model(ego_hist, social_agents, map_scene, traf, risk_label=risk_label)
 
 assert out["keypoints"].shape  == (B, K, 3, 2),  f"keypoints shape 오류: {out['keypoints'].shape}"
 assert out["trajectory"].shape == (B, K, 80, 2), f"trajectory shape 오류: {out['trajectory'].shape}"
@@ -68,7 +71,7 @@ print(f"[1] forward (train) 통과  keypoints={out['keypoints'].shape}  "
 # ── [2] Forward (추론 모드 — risk_label=None) ─────────────────────────────────
 model.eval()
 with torch.no_grad():
-    out_infer = model(ego_hist, social_agents, map_tokens, risk_label=None)
+    out_infer = model(ego_hist, social_agents, map_scene, traf, risk_label=None)
 assert out_infer["trajectory"].shape == (B, K, 80, 2)
 print(f"[2] forward (infer) 통과  risk_label=None → 자체 예측 사용")
 

@@ -19,8 +19,6 @@ import os
 import sys
 import time
 
-import numpy as np
-
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 import torch
@@ -41,16 +39,16 @@ def _prep_inputs(feats, device):
     scene = feats["scene_tensor"]    # [50, 10, 3]
     traf  = feats["traffic_tensor"]  # [6, 1]
 
-    ego_hist = agent[0:1]                          # [1, 11, 6]
-    social   = agent[1:].mean(axis=1)[None]        # [1, 31, 6]
-    map_poly = scene.max(axis=1)                   # [50, 3]
-    traf_pad = np.pad(traf, [(0, 0), (0, 2)])      # [6, 3]
-    map_tok  = np.concatenate([map_poly, traf_pad], axis=0)[None]  # [1, 56, 3]
+    ego_hist  = agent[0:1]           # [1, 11, 6]
+    social    = agent[1:][None]      # [1, 31, 11, 6]
+    map_scene = scene[None]          # [1, 50, 10, 3]
+    traf_t    = traf[None]           # [1, 6, 1]
 
     return (
         torch.from_numpy(ego_hist).to(device),
         torch.from_numpy(social).to(device),
-        torch.from_numpy(map_tok).to(device),
+        torch.from_numpy(map_scene).to(device),
+        torch.from_numpy(traf_t).to(device),
     )
 
 
@@ -165,9 +163,9 @@ def main():
         _update(results[lstm_label], ade, fde, mr)
 
         # ── RiskConditionedModel ──────────────────────────────────────────────
-        ego_hist, social, map_tok = _prep_inputs(feats, device)
+        ego_hist, social, map_scene, traf = _prep_inputs(feats, device)
         with torch.no_grad():
-            out = mm_model(ego_hist, social, map_tok, risk_label=None)
+            out = mm_model(ego_hist, social, map_scene, traf, risk_label=None)
         mm_pred = out["trajectory"][0].cpu().numpy()           # [K, 80, 2]
         ade, fde = compute_minADE_FDE(mm_pred, gt_traj, gt_valid)
         mr       = compute_MR(mm_pred, gt_traj, gt_valid)
