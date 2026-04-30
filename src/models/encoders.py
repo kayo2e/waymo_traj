@@ -76,6 +76,9 @@ class MultiStreamMambaEncoder(nn.Module):
         self.map_enc    = JointPolylineEncoder(map_dim, D)    # [B, 50, D]
         self.traf_proj  = nn.Linear(1, D)                     # [B, 6, D]
 
+        # ── Positional encoding: (x, y) → D ────────────────────────────────
+        self.pos_enc = nn.Linear(2, D)
+
         # ── Joint Self-Attention ─────────────────────────────────────────────
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=D, nhead=n_heads,
@@ -88,10 +91,22 @@ class MultiStreamMambaEncoder(nn.Module):
 
     def forward(self, ego_hist, social_agents, map_scene, traf):
         # ── 각 모달리티 인코딩 ───────────────────────────────────────────────────
-        e = self.ego_proj(ego_hist)       # [B, T, D]
+        e = self.ego_proj(ego_hist)         # [B, T, D]
         s = self.social_enc(social_agents)  # [B, N, D]
         m = self.map_enc(map_scene)         # [B, 50, D]
         t = self.traf_proj(traf)            # [B, 6, D]
+
+        # ── Positional encoding 주입 ─────────────────────────────────────────
+        # 에고: 각 프레임의 (x, y)
+        e = e + self.pos_enc(ego_hist[:, :, 0:2])
+
+        # 주변 에이전트: 마지막 프레임 (x, y)
+        s = s + self.pos_enc(social_agents[:, :, -1, 0:2])
+
+        # 맵 폴리라인: 10개 포인트의 중심 (x, y)
+        m = m + self.pos_enc(map_scene[:, :, :, 0:2].mean(dim=2))
+
+        # 신호등: 위치 정보 없으므로 생략
 
         # ── 전체 토큰 concat: [B, T+N+50+6, D] = [B, 98, D] ─────────────────
         tokens = torch.cat([e, s, m, t], dim=1)
