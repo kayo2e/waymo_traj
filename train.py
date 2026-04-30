@@ -139,13 +139,24 @@ def run_one_epoch(model, optimizer, tfrecord_paths, device, train,
             ])
             best_k = int(mode_ades.argmin())
 
+        # ── 커브 가중치 (Hard Sample Mining) ─────────────────────────────────
+        with torch.no_grad():
+            gt_xy = gt_traj[valid_idx]
+            if len(gt_xy) >= 3:
+                diffs = gt_xy[1:] - gt_xy[:-1]            # [T-1, 2]
+                accel = (diffs[1:] - diffs[:-1]).norm(dim=1)  # [T-2]
+                curvature = accel.mean()
+                curve_w = 1.0 + 2.0 * curvature.clamp(max=1.0)
+            else:
+                curve_w = torch.ones(1, device=gt_traj.device)
+
         # ── L_traj ───────────────────────────────────────────────────────────
         if kp_valid.any():
             kp_loss = F.huber_loss(pred_kp[best_k][kp_valid], gt_kp[kp_valid], delta=2.0)
         else:
             kp_loss = pred_kp.sum() * 0.0
 
-        traj_loss = F.l1_loss(pred_traj[best_k][valid_idx], gt_traj[valid_idx])
+        traj_loss = F.l1_loss(pred_traj[best_k][valid_idx], gt_traj[valid_idx]) * curve_w
         L_traj = kp_loss + traj_loss
 
         # ── L_risk (BCE) ──────────────────────────────────────────────────────
