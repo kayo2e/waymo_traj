@@ -72,10 +72,10 @@ def run_one_epoch(model, optimizer, paths, device, train, log_every=200, max_sce
         if not feats["gt_valid"].any():
             continue
 
-        # 입력: ego (x, y) 히스토리 [1, T, 2]
+        # 입력: ego 전체 피처 (x, y, vx, vy, cos_h, sin_h) [1, T, 6]
         ego_xy = torch.from_numpy(
-            feats["agent_tensor"][0, :, :2]
-        ).unsqueeze(0).to(device)                       # [1, 11, 2]
+            feats["agent_tensor"][0]
+        ).unsqueeze(0).to(device)                       # [1, 11, 6]
 
         gt_traj  = torch.from_numpy(feats["gt_trajectory"]).to(device)   # [80, 2]
         gt_valid = torch.from_numpy(feats["gt_valid"]).to(device)         # [80]
@@ -122,7 +122,7 @@ def main():
     print(f"Epochs : {args.epochs}  lr={args.lr}")
     print()
 
-    model     = LSTMBaseline(hidden_size=64, num_layers=2).to(device)
+    model     = LSTMBaseline(input_size=6, hidden_size=64, num_layers=2).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.5)
 

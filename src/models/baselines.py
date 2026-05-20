@@ -22,16 +22,18 @@ class ConstantVelocityBaseline:
 
 class LSTMBaseline(nn.Module):
     """
-    Simple LSTM that maps past (x, y) history to 80-step future trajectory.
+    Simple LSTM that maps past agent feature history to 80-step future trajectory.
 
-    Input : [B, T_hist, 2]  — ego (x, y) from agent_tensor[:, :, :2]
-    Output: [B, 80, 2]
+    Input : [B, T_hist, input_size]
+            input_size=6  → (x, y, vx, vy, cos_h, sin_h) from agent_tensor[0]
+            input_size=2  → (x, y) only (legacy, worse performance)
+    Output: [B, 80, 2]   — ego-relative absolute (x, y) positions
     """
 
-    def __init__(self, hidden_size: int = 64, num_layers: int = 2):
+    def __init__(self, input_size: int = 6, hidden_size: int = 64, num_layers: int = 2):
         super().__init__()
         self.lstm = nn.LSTM(
-            input_size=2,
+            input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
