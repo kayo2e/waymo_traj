@@ -211,6 +211,11 @@ def extract_features(scenario):
     }
 
 
+# ── Condition label constants ─────────────────────────────────────────────────
+MANEUVER_NAMES = ["Stop", "GoStraight", "LaneChangeLeft", "LaneChangeRight", "TurnLeft", "TurnRight"]
+SPEED_NAMES    = ["Stopped", "Slow", "Fast"]
+COND_DIM       = 9   # 6 maneuver + 3 speed
+
 # ── Risk label constants ──────────────────────────────────────────────────────
 _PROXIMITY_M     = 7.0    # 근접 판단 거리 (m)
 _HARD_BRAKE_MS2  = -6.0   # 급정지 가속도 임계값 (m/s²)
@@ -270,5 +275,69 @@ def extract_risk_label(scenario) -> np.ndarray:
 
         if label[1] and label[2]:
             break
+
+    return label
+
+
+def extract_condition_label(scenario) -> np.ndarray:
+    """
+    GT 궤적 + 에고 히스토리에서 조건 레이블 추출.
+
+    Returns [9] float32
+      [0:6] Maneuver intent (6-class one-hot, GT에서 역산)
+             Stop / GoStraight / LaneChangeLeft / LaneChangeRight / TurnLeft / TurnRight
+      [6:9] Speed state (3-class one-hot, 현재 프레임 속도)
+             Stopped (v<0.5m/s) / Slow (0.5≤v<5) / Fast (v≥5)
+    """
+    t0      = scenario.current_time_index
+    sdc_idx = scenario.sdc_track_index
+    ego_trk = scenario.tracks[sdc_idx]
+    label   = np.zeros(COND_DIM, dtype=np.float32)
+
+    ego_s = ego_trk.states[t0]
+
+    # ── Speed state ───────────────────────────────────────────────────────────
+    v = np.hypot(ego_s.velocity_x, ego_s.velocity_y)
+    if v < 0.5:
+        label[6] = 1.0   # Stopped
+    elif v < 5.0:
+        label[7] = 1.0   # Slow
+    else:
+        label[8] = 1.0   # Fast
+
+    # ── Maneuver intent from GT future ────────────────────────────────────────
+    x0, y0   = ego_s.center_x, ego_s.center_y
+    cos_h    = float(np.cos(ego_s.heading))
+    sin_h    = float(np.sin(ego_s.heading))
+
+    valid_xy = []
+    for k in range(N_FUTURE):
+        t = t0 + 1 + k
+        if t >= len(ego_trk.states):
+            break
+        s = ego_trk.states[t]
+        if s.valid:
+            ex, ey = _world_to_ego(s.center_x, s.center_y, x0, y0, cos_h, sin_h)
+            valid_xy.append((ex, ey))
+
+    if not valid_xy:
+        label[0] = 1.0   # Stop (GT 없으면 정지로 간주)
+        return label
+
+    final_x, final_y = valid_xy[-1]
+    total_dist = np.hypot(final_x, final_y)
+
+    if total_dist < 2.0:
+        label[0] = 1.0   # Stop
+    elif abs(final_y) < 3.0:
+        label[1] = 1.0   # GoStraight
+    elif 3.0 <= final_y < 10.0:
+        label[2] = 1.0   # LaneChangeLeft
+    elif -10.0 < final_y <= -3.0:
+        label[3] = 1.0   # LaneChangeRight
+    elif final_y >= 10.0:
+        label[4] = 1.0   # TurnLeft
+    else:
+        label[5] = 1.0   # TurnRight
 
     return label

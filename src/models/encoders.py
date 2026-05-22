@@ -52,7 +52,7 @@ class MultiStreamMambaEncoder(nn.Module):
     """
 
     def __init__(self, agent_dim=10, map_dim=6, d_model=128, n_layers=2, n_heads=4,
-                 use_risk_prefix=True, use_traj_fix=True):
+                 use_risk_prefix=True, use_traj_fix=True, cond_dim=3):
         super().__init__()
         D = d_model
         self.use_risk_prefix = use_risk_prefix
@@ -64,9 +64,9 @@ class MultiStreamMambaEncoder(nn.Module):
         self.map_enc    = JointPolylineEncoder(map_dim, D)    # [B, 50, D]
         self.traf_proj  = nn.Linear(1, D)                     # [B, 6, D]
 
-        # ── Risk prefix token 투영 ───────────────────────────────────────────
+        # ── Condition prefix token 투영 ──────────────────────────────────────
         if use_risk_prefix:
-            self.risk_proj = nn.Linear(3, D)
+            self.risk_proj = nn.Linear(cond_dim, D)
 
         # ── Positional encoding: (x, y) → D ────────────────────────────────
         self.pos_enc = nn.Linear(2, D)
