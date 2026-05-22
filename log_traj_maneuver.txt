@@ -1,0 +1,73 @@
+/home/dtlab/miniconda3/envs/waymo2/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+[transformers] The fast path is not available because one of `(selective_state_update, selective_scan_fn, causal_conv1d_fn, causal_conv1d_update, mamba_inner_fn)` is None. Falling back to the sequential implementation of Mamba, as use_mambapy is set to False. To install follow https://github.com/state-spaces/mamba/#installation for mamba-ssm and install the kernels library using `pip install kernels` or https://github.com/Dao-AILab/causal-conv1d for causal-conv1d. For the mamba.py backend, follow https://github.com/alxndrTL/mamba.py.
+
+train shards:   0%|          | 0/50 [00:00<?, ?shard/s]
+train shards:   0%|          | 0/50 [03:57<?, ?shard/s, ADE=0.533, loss=0.3294, n=467]
+train shards:   2%|▏         | 1/50 [03:57<3:14:07, 237.70s/shard, ADE=0.533, loss=0.3294, n=467]
+train shards:   2%|▏         | 1/50 [08:14<3:14:07, 237.70s/shard, ADE=0.480, loss=0.2951, n=971]
+train shards:   4%|▍         | 2/50 [08:14<3:19:21, 249.19s/shard, ADE=0.480, loss=0.2951, n=971]
+train shards:   4%|▍         | 2/50 [12:23<3:19:21, 249.19s/shard, ADE=0.455, loss=0.2795, n=1459]
+train shards:   6%|▌         | 3/50 [12:23<3:15:05, 249.04s/shard, ADE=0.455, loss=0.2795, n=1459]
+train shards:   6%|▌         | 3/50 [16:25<3:15:05, 249.04s/shard, ADE=0.440, loss=0.2696, n=1933]
+train shards:   8%|▊         | 4/50 [16:25<3:08:35, 245.99s/shard, ADE=0.440, loss=0.2696, n=1933]
+train shards:   8%|▊         | 4/50 [20:13<3:08:35, 245.99s/shard, ADE=0.429, loss=0.2627, n=2382]
+train shards:  10%|█         | 5/50 [20:13<2:59:40, 239.58s/shard, ADE=0.429, loss=0.2627, n=2382]
+train shards:  10%|█         | 5/50 [24:15<2:59:40, 239.58s/shard, ADE=0.417, loss=0.2555, n=2858]
+train shards:  12%|█▏        | 6/50 [24:15<2:56:21, 240.49s/shard, ADE=0.417, loss=0.2555, n=2858]
+train shards:  12%|█▏        | 6/50 [28:51<2:56:21, 240.49s/shard, ADE=0.406, loss=0.2488, n=3396]
+train shards:  14%|█▍        | 7/50 [28:51<3:00:36, 252.01s/shard, ADE=0.406, loss=0.2488, n=3396]
+train shards:  14%|█▍        | 7/50 [32:52<3:00:36, 252.01s/shard, ADE=0.398, loss=0.2435, n=3870]
+train shards:  16%|█▌        | 8/50 [32:52<2:54:04, 248.68s/shard, ADE=0.398, loss=0.2435, n=3870]
+train shards:  16%|█▌        | 8/50 [37:11<2:54:04, 248.68s/shard, ADE=0.388, loss=0.2370, n=4377]
+train shards:  18%|█▊        | 9/50 [37:11<2:52:03, 251.80s/shard, ADE=0.388, loss=0.2370, n=4377]
+train shards:  18%|█▊        | 9/50 [41:21<2:52:03, 251.80s/shard, ADE=0.381, loss=0.2320, n=4869]
+train shards:  20%|██        | 10/50 [41:21<2:47:32, 251.32s/shard, ADE=0.381, loss=0.2320, n=4869]
+train shards:  20%|██        | 10/50 [45:47<2:47:32, 251.32s/shard, ADE=0.373, loss=0.2269, n=5389]
+train shards:  22%|██▏       | 11/50 [45:47<2:46:15, 255.78s/shard, ADE=0.373, loss=0.2269, n=5389]
+train shards:  22%|██▏       | 11/50 [49:51<2:46:15, 255.78s/shard, ADE=0.367, loss=0.2233, n=5867]
+train shards:  24%|██▍       | 12/50 [49:51<2:39:37, 252.04s/shard, ADE=0.367, loss=0.2233, n=5867]
+train shards:  24%|██▍       | 12/50 [54:04<2:39:37, 252.04s/shard, ADE=0.361, loss=0.2196, n=6363]
+train shards:  26%|██▌       | 13/50 [54:04<2:35:35, 252.30s/shard, ADE=0.361, loss=0.2196, n=6363]
+train shards:  26%|██▌       | 13/50 [58:04<2:35:35, 252.30s/shard, ADE=0.357, loss=0.2170, n=6836]
+train shards:  28%|██▊       | 14/50 [58:04<2:29:13, 248.72s/shard, ADE=0.357, loss=0.2170, n=6836]
+train shards:  28%|██▊       | 14/50 [1:02:25<2:29:13, 248.72s/shard, ADE=0.353, loss=0.2140, n=7346]
+train shards:  30%|███       | 15/50 [1:02:25<2:27:10, 252.29s/shard, ADE=0.353, loss=0.2140, n=7346]
+train shards:  30%|███       | 15/50 [1:06:38<2:27:10, 252.29s/shard, ADE=0.348, loss=0.2109, n=7844]
+train shards:  32%|███▏      | 16/50 [1:06:38<2:23:12, 252.72s/shard, ADE=0.348, loss=0.2109, n=7844]
+train shards:  32%|███▏      | 16/50 [1:10:33<2:23:12, 252.72s/shard, ADE=0.344, loss=0.2080, n=8304]
+train shards:  34%|███▍      | 17/50 [1:10:33<2:15:57, 247.19s/shard, ADE=0.344, loss=0.2080, n=8304]
+train shards:  34%|███▍      | 17/50 [1:14:34<2:15:57, 247.19s/shard, ADE=0.339, loss=0.2045, n=8778]
+train shards:  36%|███▌      | 18/50 [1:14:34<2:10:53, 245.43s/shard, ADE=0.339, loss=0.2045, n=8778]
+train shards:  36%|███▌      | 18/50 [1:18:46<2:10:53, 245.43s/shard, ADE=0.335, loss=0.2020, n=9283]
+train shards:  38%|███▊      | 19/50 [1:18:46<2:07:54, 247.57s/shard, ADE=0.335, loss=0.2020, n=9283]
+train shards:  38%|███▊      | 19/50 [1:22:54<2:07:54, 247.57s/shard, ADE=0.332, loss=0.1998, n=9793]
+train shards:  40%|████      | 20/50 [1:22:54<2:03:44, 247.49s/shard, ADE=0.332, loss=0.1998, n=9793]
+train shards:  40%|████      | 20/50 [1:27:00<2:03:44, 247.49s/shard, ADE=0.329, loss=0.1978, n=10288]
+train shards:  42%|████▏     | 21/50 [1:27:00<1:59:23, 247.03s/shard, ADE=0.329, loss=0.1978, n=10288]
+train shards:  42%|████▏     | 21/50 [1:31:11<1:59:23, 247.03s/shard, ADE=0.326, loss=0.1961, n=10791]
+train shards:  44%|████▍     | 22/50 [1:31:11<1:55:55, 248.43s/shard, ADE=0.326, loss=0.1961, n=10791]
+train shards:  44%|████▍     | 22/50 [1:34:56<1:55:55, 248.43s/shard, ADE=0.324, loss=0.1944, n=11233]
+train shards:  46%|████▌     | 23/50 [1:34:56<1:48:34, 241.29s/shard, ADE=0.324, loss=0.1944, n=11233]
+train shards:  46%|████▌     | 23/50 [1:39:16<1:48:34, 241.29s/shard, ADE=0.321, loss=0.1924, n=11741]
+train shards:  48%|████▊     | 24/50 [1:39:16<1:46:57, 246.84s/shard, ADE=0.321, loss=0.1924, n=11741]
+train shards:  48%|████▊     | 24/50 [1:43:53<1:46:57, 246.84s/shard, ADE=0.319, loss=0.1909, n=12281]
+train shards:  50%|█████     | 25/50 [1:43:53<1:46:39, 255.98s/shard, ADE=0.319, loss=0.1909, n=12281]/tmp/tmpcigs91ag: line 3: 2777517 Killed                  python /home/dtlab/gy/waymo_traj/waymo_traj/train.py --run_name traj_maneuver --use_cache --cond_type maneuver --epochs 10 --lr 1e-4 --loss laplace --device cuda
+
+ERROR conda.cli.main_run:execute(127): `conda run python /home/dtlab/gy/waymo_traj/waymo_traj/train.py --run_name traj_maneuver --use_cache --cond_type maneuver --epochs 10 --lr 1e-4 --loss laplace --device cuda` failed. (See above for error)
+Device : cuda
+Train  : training   shards 00000-00049  (50 files)
+Eval   : validation shards 00000-00007  (8 files)
+Epochs : 10  lr=0.0001  wd=0.0001  λ=0.5
+Run        : traj_maneuver  →  /home/dtlab/gy/waymo_traj/waymo_traj/checkpoints/traj_maneuver/
+Loss       : Laplace NLL (b=1.0)
+LaneMamba  : True
+RiskPrefix : True
+TrajGPT    : False
+TrajFix    : True
+CondType   : maneuver  (cond_dim=9)
+
+=================================================================
+Epoch 1/10  tf_prob=1.00
+=================================================================
+

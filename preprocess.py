@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
 from src.data.tfrecord import iter_tfrecords
-from src.data.features import extract_features, extract_risk_label
+from src.data.features import extract_features, extract_risk_label, extract_condition_label
 
 
 def parse_args():
@@ -41,7 +41,7 @@ def process_shard(shard_path, out_path):
     from waymo_open_dataset.protos import scenario_pb2
 
     agents, scenes, trafs = [], [], []
-    gt_trajs, gt_valids, risk_labels, sc_ids = [], [], [], []
+    gt_trajs, gt_valids, risk_labels, cond_labels, sc_ids = [], [], [], [], []
 
     pbar = tqdm(iter_tfrecords([shard_path]), desc="scenarios", unit="sc", leave=False)
     for raw_bytes in pbar:
@@ -50,6 +50,7 @@ def process_shard(shard_path, out_path):
         try:
             f  = extract_features(sc)
             rl = extract_risk_label(sc)
+            cl = extract_condition_label(sc)
         except Exception:
             continue
         if not f["gt_valid"].any():
@@ -61,6 +62,7 @@ def process_shard(shard_path, out_path):
         gt_trajs.append(f["gt_trajectory"])
         gt_valids.append(f["gt_valid"])
         risk_labels.append(rl)
+        cond_labels.append(cl)
         sc_ids.append(sc.scenario_id)
         pbar.set_postfix(saved=len(agents))
 
@@ -75,6 +77,7 @@ def process_shard(shard_path, out_path):
         gt_trajs    = np.array(gt_trajs,    dtype=np.float32),   # [N,80,2]
         gt_valids   = np.array(gt_valids,   dtype=bool),         # [N,80]
         risk_labels = np.array(risk_labels, dtype=np.float32),   # [N,3]
+        cond_labels = np.array(cond_labels, dtype=np.float32),   # [N,9]
         sc_ids      = np.array(sc_ids),
     )
     return len(agents)

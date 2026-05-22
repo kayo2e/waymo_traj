@@ -35,6 +35,52 @@ from src.models.motion_model import RiskConditionedModel
 from src.eval.metrics        import compute_minADE_FDE, compute_MR
 
 
+def _compute_cond_label(agent: np.ndarray,
+                        gt_traj: np.ndarray,
+                        gt_valid: np.ndarray) -> np.ndarray:
+    """
+    기존 .npz 배열에서 즉석으로 9-dim condition label 계산.
+    agent   [32,11,10]  ego-relative (채널2=vx, 채널3=vy)
+    gt_traj [80,2]      ego-relative future
+    gt_valid [80]       bool
+    """
+    label = np.zeros(9, dtype=np.float32)
+
+    # Speed state (현재 프레임 ego 속도)
+    vx, vy = agent[0, -1, 2], agent[0, -1, 3]
+    v = np.hypot(vx, vy)
+    if v < 0.5:
+        label[6] = 1.0   # Stopped
+    elif v < 5.0:
+        label[7] = 1.0   # Slow
+    else:
+        label[8] = 1.0   # Fast
+
+    # Maneuver intent (GT 최종 위치, 이미 ego-relative)
+    vi = np.where(gt_valid)[0]
+    if len(vi) == 0:
+        label[0] = 1.0   # Stop
+        return label
+
+    final_x, final_y = gt_traj[vi[-1]]
+    total_dist = np.hypot(final_x, final_y)
+
+    if total_dist < 2.0:
+        label[0] = 1.0   # Stop
+    elif abs(final_y) < 3.0:
+        label[1] = 1.0   # GoStraight
+    elif 3.0 <= final_y < 10.0:
+        label[2] = 1.0   # LaneChangeLeft
+    elif -10.0 < final_y <= -3.0:
+        label[3] = 1.0   # LaneChangeRight
+    elif final_y >= 10.0:
+        label[4] = 1.0   # TurnLeft
+    else:
+        label[5] = 1.0   # TurnRight
+
+    return label
+
+
 def _train_shard(n):
     return os.path.join(DATA_ROOT, "train", f"training.tfrecord-{n:05d}-of-01000")
 
@@ -80,6 +126,13 @@ def parse_args():
                    help="preprocess.py로 생성한 .npz 캐시 사용 (빠른 학습)")
     p.add_argument("--cache_dir", type=str, default=os.path.join(ROOT, "cache"),
                    help="캐시 디렉토리 경로")
+    p.add_argument("--cond_type", type=str, default="risk",
+                   choices=["risk", "maneuver"],
+                   help="risk: 기존 3-dim 위험 이벤트 | maneuver: 9-dim 기동의도+속도")
+    p.add_argument("--no_map_per_step", action="store_true",
+                   help="매 스텝 map cross-attention 비활성화 (ablation)")
+    p.add_argument("--use_ar", action="store_true",
+                   help="AR LSTM 디코더 사용 (기본: Non-AR MLP 디코더)")
     return p.parse_args()
 
 
@@ -112,7 +165,8 @@ def _prep_inputs(feats: dict, device):
 
 def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
                         log_every=50, max_scenarios=None, tf_prob=1.0,
-                        loss_mode="laplace", laplace_b=1.0, use_risk_prefix=True):
+                        loss_mode="laplace", laplace_b=1.0, use_risk_prefix=True,
+                        label_key="risk_labels"):
     """캐시(.npz) 기반 epoch — TFRecord 파싱 없이 빠른 학습."""
     bce = nn.BCEWithLogitsLoss()
     total_loss = total_ade = total_fde = total_mr = 0.0
@@ -138,12 +192,18 @@ def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
             if max_scenarios and n_ok >= max_scenarios:
                 break
 
-            agent       = data["agents"][idx]       # [32,11,10]
-            scene       = data["scenes"][idx]       # [50,10,6]
-            traf        = data["trafs"][idx]        # [6,1]
-            gt_traj_np  = data["gt_trajs"][idx]     # [80,2]
-            gt_valid_np = data["gt_valids"][idx]    # [80]
-            risk_np     = data["risk_labels"][idx]  # [3]
+            agent       = data["agents"][idx]          # [32,11,10]
+            scene       = data["scenes"][idx]          # [50,10,6]
+            traf        = data["trafs"][idx]           # [6,1]
+            gt_traj_np  = data["gt_trajs"][idx]        # [80,2]
+            gt_valid_np = data["gt_valids"][idx]       # [80]
+
+            if label_key in data:
+                risk_np = data[label_key][idx]
+            elif label_key == "cond_labels":
+                risk_np = _compute_cond_label(agent, gt_traj_np, gt_valid_np)
+            else:
+                risk_np = data["risk_labels"][idx]
 
             if not gt_valid_np.any():
                 continue
@@ -369,6 +429,10 @@ def main():
     use_lane_mamba  = not args.no_lane_mamba
     use_risk_prefix = not args.no_risk_prefix
     use_traj_fix    = not args.no_traj_fix
+    use_map_per_step = not args.no_map_per_step
+    use_ar          = args.use_ar
+    cond_dim        = 9 if args.cond_type == "maneuver" else 3
+    label_key       = "cond_labels" if args.cond_type == "maneuver" else "risk_labels"
     ckpt_dir = os.path.join(CKPT_DIR, args.run_name)
     os.makedirs(ckpt_dir, exist_ok=True)
     print(f"Run        : {args.run_name}  →  {ckpt_dir}/")
@@ -377,6 +441,8 @@ def main():
     print(f"RiskPrefix : {use_risk_prefix}")
     print(f"TrajGPT    : {args.use_traj_gpt}")
     print(f"TrajFix    : {use_traj_fix}")
+    print(f"CondType   : {args.cond_type}  (cond_dim={cond_dim})")
+    print(f"Decoder    : {'AR-LSTM' if use_ar else 'Non-AR-MLP'}")
     print()
 
     if args.use_traj_gpt:
@@ -389,7 +455,9 @@ def main():
                                      use_lane_mamba=use_lane_mamba,
                                      use_risk_prefix=use_risk_prefix,
                                      use_traj_fix=use_traj_fix,
-                                     use_map_per_step=True).to(device)
+                                     use_map_per_step=use_map_per_step,
+                                     use_ar=use_ar,
+                                     cond_dim=cond_dim).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.wd)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -439,6 +507,7 @@ def main():
             max_scenarios=args.max_scenarios, tf_prob=tf_prob,
             loss_mode=args.loss, laplace_b=args.laplace_b,
             use_risk_prefix=use_risk_prefix,
+            label_key=label_key,
         )
         print(f"  [train] DONE  loss={tr_loss:.4f}  "
               f"minADE={tr_ade:.3f}m  minFDE={tr_fde:.3f}m  MR={tr_mr:.3f}  "
@@ -452,6 +521,7 @@ def main():
                 max_scenarios=args.max_scenarios,
                 loss_mode=args.loss, laplace_b=args.laplace_b,
                 use_risk_prefix=use_risk_prefix,
+                label_key=label_key,
             )
         print(f"  [eval]  DONE  loss={ev_loss:.4f}  "
               f"minADE={ev_ade:.3f}m  minFDE={ev_fde:.3f}m  MR={ev_mr:.3f}  "
