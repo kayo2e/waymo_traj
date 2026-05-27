@@ -30,7 +30,7 @@ DATA_ROOT = os.path.join(ROOT, "waymo-motion-v1_3_0")
 sys.path.insert(0, ROOT)
 
 from src.data.tfrecord       import iter_tfrecords
-from src.data.features       import extract_features, extract_risk_label
+from src.data.features       import extract_features, extract_risk_label, MAP_DIM
 from src.models.motion_model import RiskConditionedModel
 from src.eval.metrics        import compute_minADE_FDE, compute_MR
 
@@ -127,12 +127,18 @@ def parse_args():
     p.add_argument("--cache_dir", type=str, default=os.path.join(ROOT, "cache"),
                    help="캐시 디렉토리 경로")
     p.add_argument("--cond_type", type=str, default="risk",
-                   choices=["risk", "maneuver"],
-                   help="risk: 기존 3-dim 위험 이벤트 | maneuver: 9-dim 기동의도+속도")
+                   choices=["risk", "maneuver", "none"],
+                   help="risk: 기존 3-dim 위험 이벤트 | maneuver: 9-dim 기동의도+속도 | none: 조건 없음")
     p.add_argument("--no_map_per_step", action="store_true",
                    help="매 스텝 map cross-attention 비활성화 (ablation)")
     p.add_argument("--use_ar", action="store_true",
                    help="AR LSTM 디코더 사용 (기본: Non-AR MLP 디코더)")
+    p.add_argument("--lam_align", type=float, default=0.0,
+                   help="Mode-Maneuver alignment loss 가중치 (cond_type=maneuver 전용, 0이면 비활성)")
+    p.add_argument("--lam_div",  type=float, default=0.0,
+                   help="Lane diversity loss 가중치 — mode 간 lane attention 직교성 강제 (0이면 비활성)")
+    p.add_argument("--use_lane_anchor", action="store_true",
+                   help="각 mode의 lane attention으로 trajectory anchor offset 추가 (구조적 방향 사전화)")
     return p.parse_args()
 
 
@@ -166,7 +172,7 @@ def _prep_inputs(feats: dict, device):
 def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
                         log_every=50, max_scenarios=None, tf_prob=1.0,
                         loss_mode="laplace", laplace_b=1.0, use_risk_prefix=True,
-                        label_key="risk_labels"):
+                        label_key="risk_labels", lam_align=0.0, lam_div=0.0):
     """캐시(.npz) 기반 epoch — TFRecord 파싱 없이 빠른 학습."""
     bce = nn.BCEWithLogitsLoss()
     total_loss = total_ade = total_fde = total_mr = 0.0
@@ -198,7 +204,9 @@ def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
             gt_traj_np  = data["gt_trajs"][idx]        # [80,2]
             gt_valid_np = data["gt_valids"][idx]       # [80]
 
-            if label_key in data:
+            if label_key is None:
+                risk_np = None
+            elif label_key in data:
                 risk_np = data[label_key][idx]
             elif label_key == "cond_labels":
                 risk_np = _compute_cond_label(agent, gt_traj_np, gt_valid_np)
@@ -212,7 +220,7 @@ def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
             social    = torch.from_numpy(agent[1:][None]).to(device)
             map_scene = torch.from_numpy(scene[None]).to(device)
             traf_t    = torch.from_numpy(traf[None]).to(device)
-            risk_gt   = torch.from_numpy(risk_np).unsqueeze(0).to(device)
+            risk_gt   = None if risk_np is None else torch.from_numpy(risk_np).unsqueeze(0).to(device)
             gt_traj   = torch.from_numpy(gt_traj_np).to(device)
             gt_valid  = torch.from_numpy(gt_valid_np).to(device)
 
@@ -245,6 +253,23 @@ def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
                 loss = L_traj + 0.5 * bce(risk_logits[0], risk_gt[0])
             else:
                 loss = L_traj
+
+            # Mode-Maneuver alignment: GT maneuver class에 해당하는 mode를 직접 supervise
+            if train and lam_align > 0 and label_key == "cond_labels" and risk_gt is not None:
+                maneuver_idx = int(risk_gt[0, :6].argmax())
+                loss = loss + lam_align * traj_losses[maneuver_idx]
+
+            # Lane diversity loss: mode 간 lane attention 직교성 강제
+            # gram[i,j] = cos_sim(attn_w[i], attn_w[j]) — off-diagonal 최소화
+            if train and lam_div > 0:
+                lane_attn_w = out.get("lane_attn_w")
+                if lane_attn_w is not None:
+                    attn = lane_attn_w[0]                                   # [K, 50]
+                    attn_n = F.normalize(attn, dim=-1)                      # [K, 50]
+                    gram = attn_n @ attn_n.t()                              # [K, K]
+                    eye  = torch.eye(K, device=gram.device)
+                    L_div = (gram * (1 - eye)).sum() / (K * (K - 1))
+                    loss = loss + lam_div * L_div
 
             if train:
                 optimizer.zero_grad()
@@ -431,8 +456,8 @@ def main():
     use_traj_fix    = not args.no_traj_fix
     use_map_per_step = not args.no_map_per_step
     use_ar          = args.use_ar
-    cond_dim        = 9 if args.cond_type == "maneuver" else 3
-    label_key       = "cond_labels" if args.cond_type == "maneuver" else "risk_labels"
+    cond_dim        = 9 if args.cond_type == "maneuver" else (1 if args.cond_type == "none" else 3)
+    label_key       = "cond_labels" if args.cond_type == "maneuver" else (None if args.cond_type == "none" else "risk_labels")
     ckpt_dir = os.path.join(CKPT_DIR, args.run_name)
     os.makedirs(ckpt_dir, exist_ok=True)
     print(f"Run        : {args.run_name}  →  {ckpt_dir}/")
@@ -443,6 +468,7 @@ def main():
     print(f"TrajFix    : {use_traj_fix}")
     print(f"CondType   : {args.cond_type}  (cond_dim={cond_dim})")
     print(f"Decoder    : {'AR-LSTM' if use_ar else 'Non-AR-MLP'}")
+    print(f"LaneAnchor : {args.use_lane_anchor}  λ_div={args.lam_div}")
     print()
 
     if args.use_traj_gpt:
@@ -452,11 +478,13 @@ def main():
                         decoder_type=decoder_type).to(device)
     else:
         model = RiskConditionedModel(d_model=128, K=6, n_layers=2,
+                                     map_dim=MAP_DIM,
                                      use_lane_mamba=use_lane_mamba,
                                      use_risk_prefix=use_risk_prefix,
                                      use_traj_fix=use_traj_fix,
                                      use_map_per_step=use_map_per_step,
                                      use_ar=use_ar,
+                                     use_lane_anchor=args.use_lane_anchor,
                                      cond_dim=cond_dim).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.wd)
@@ -507,7 +535,8 @@ def main():
             max_scenarios=args.max_scenarios, tf_prob=tf_prob,
             loss_mode=args.loss, laplace_b=args.laplace_b,
             use_risk_prefix=use_risk_prefix,
-            label_key=label_key,
+            label_key=label_key, lam_align=args.lam_align,
+            lam_div=args.lam_div,
         )
         print(f"  [train] DONE  loss={tr_loss:.4f}  "
               f"minADE={tr_ade:.3f}m  minFDE={tr_fde:.3f}m  MR={tr_mr:.3f}  "
@@ -521,7 +550,8 @@ def main():
                 max_scenarios=args.max_scenarios,
                 loss_mode=args.loss, laplace_b=args.laplace_b,
                 use_risk_prefix=use_risk_prefix,
-                label_key=label_key,
+                label_key=label_key, lam_align=0.0,
+                lam_div=0.0,
             )
         print(f"  [eval]  DONE  loss={ev_loss:.4f}  "
               f"minADE={ev_ade:.3f}m  minFDE={ev_fde:.3f}m  MR={ev_mr:.3f}  "

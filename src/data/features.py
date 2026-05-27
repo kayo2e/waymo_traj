@@ -24,7 +24,7 @@ N_FUTURE  = 80    # frames 11..90
 KP_STEPS  = [9, 29, 49]   # 1s / 3s / 5s  (0-indexed into N_FUTURE)
 
 AGENT_DIM = 10   # x, y, vx, vy, cos_h, sin_h, valid_t, t_norm, type_v, type_c
-MAP_DIM   = 6    # x, y, dx_norm, dy_norm, is_lane, is_special
+MAP_DIM   = 8    # x, y, dx_norm, dy_norm, type_lane, type_road_edge, type_road_line, type_special
 
 
 def _world_to_ego(wx, wy, x0, y0, cos_h, sin_h):
@@ -45,11 +45,13 @@ def _direction_vecs(pts_xy: np.ndarray) -> np.ndarray:
 
 
 def _polyline_row(arr_xy: np.ndarray,
-                  is_lane: float, is_special: float) -> np.ndarray:
-    """Build [10, 6] map feature row from ego-relative xy [10, 2]."""
+                  type_lane: float, type_road_edge: float,
+                  type_road_line: float, type_special: float) -> np.ndarray:
+    """Build [10, 8] map feature row from ego-relative xy [10, 2]."""
     dirs  = _direction_vecs(arr_xy)          # [10, 2]
-    flags = np.full((10, 2), [is_lane, is_special], dtype=np.float32)
-    return np.concatenate([arr_xy, dirs, flags], axis=1)  # [10, 6]
+    flags = np.full((10, 4), [type_lane, type_road_edge, type_road_line, type_special],
+                    dtype=np.float32)
+    return np.concatenate([arr_xy, dirs, flags], axis=1)  # [10, 8]
 
 
 def extract_features(scenario):
@@ -107,28 +109,31 @@ def extract_features(scenario):
     # ── map polylines [N_MAP, 10, MAP_DIM] ───────────────────────────────────
     scene_tensor = np.zeros((N_MAP, 10, MAP_DIM), dtype=np.float32)
     for i, feat in enumerate(list(scenario.map_features)[:N_MAP]):
-        pts        = None
-        is_lane    = 0.0
-        is_special = 0.0
-        handled    = False
+        pts           = None
+        type_lane     = 0.0
+        type_road_edge = 0.0
+        type_road_line = 0.0
+        type_special  = 0.0
+        handled       = False
 
         try:
             if feat.HasField("lane"):
-                pts     = feat.lane.polyline
-                is_lane = 1.0
+                pts       = feat.lane.polyline
+                type_lane = 1.0
 
             elif feat.HasField("road_edge"):
-                pts = feat.road_edge.polyline
+                pts            = feat.road_edge.polyline
+                type_road_edge = 1.0
 
             elif feat.HasField("road_line"):
-                pts = feat.road_line.polyline
+                pts            = feat.road_line.polyline
+                type_road_line = 1.0
 
             elif feat.HasField("stop_sign"):
                 pos    = feat.stop_sign.position
                 ex, ey = _world_to_ego(pos.x, pos.y, x0, y0, cos_h, sin_h)
                 arr_xy = np.full((10, 2), [ex, ey], dtype=np.float32)
-                # stop sign has no direction → zero vectors
-                scene_tensor[i] = _polyline_row(arr_xy, 0.0, 1.0)
+                scene_tensor[i] = _polyline_row(arr_xy, 0.0, 0.0, 0.0, 1.0)
                 handled = True
 
             elif feat.HasField("crosswalk"):
@@ -138,7 +143,7 @@ def extract_features(scenario):
                     cx, cy = pts_w.mean(axis=0)
                     ex, ey = _world_to_ego(cx, cy, x0, y0, cos_h, sin_h)
                     arr_xy = np.full((10, 2), [ex, ey], dtype=np.float32)
-                    scene_tensor[i] = _polyline_row(arr_xy, 0.0, 1.0)
+                    scene_tensor[i] = _polyline_row(arr_xy, 0.0, 0.0, 0.0, 1.0)
                 handled = True
 
             elif feat.HasField("speed_bump"):
@@ -148,7 +153,7 @@ def extract_features(scenario):
                     cx, cy = pts_w.mean(axis=0)
                     ex, ey = _world_to_ego(cx, cy, x0, y0, cos_h, sin_h)
                     arr_xy = np.full((10, 2), [ex, ey], dtype=np.float32)
-                    scene_tensor[i] = _polyline_row(arr_xy, 0.0, 1.0)
+                    scene_tensor[i] = _polyline_row(arr_xy, 0.0, 0.0, 0.0, 1.0)
                 handled = True
 
         except Exception:
@@ -168,7 +173,8 @@ def extract_features(scenario):
         ex, ey           = _world_to_ego(arr_xy[:, 0], arr_xy[:, 1], x0, y0, cos_h, sin_h)
         arr_xy[:, 0]     = ex
         arr_xy[:, 1]     = ey
-        scene_tensor[i]  = _polyline_row(arr_xy, is_lane, is_special)
+        scene_tensor[i]  = _polyline_row(arr_xy, type_lane, type_road_edge,
+                                         type_road_line, type_special)
 
     # ── traffic signals ──────────────────────────────────────────────────────
     traffic_tensor = np.zeros((N_TRAF, 1), dtype=np.float32)

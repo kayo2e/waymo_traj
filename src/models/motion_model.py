@@ -33,7 +33,7 @@ class RiskConditionedModel(nn.Module):
       lane_prob    : [B, 50] or None
     """
 
-    def __init__(self, agent_dim: int = 10, map_dim: int = 6,
+    def __init__(self, agent_dim: int = 10, map_dim: int = 8,
                  d_model: int = 128, K: int = 6, n_layers: int = 2,
                  ar_hidden: int = 256,
                  use_lane_mamba: bool = True,
@@ -41,6 +41,7 @@ class RiskConditionedModel(nn.Module):
                  use_traj_fix: bool = True,
                  use_map_per_step: bool = False,
                  use_ar: bool = False,
+                 use_lane_anchor: bool = False,
                  cond_dim: int = 3):
         super().__init__()
         self.K                = K
@@ -49,6 +50,7 @@ class RiskConditionedModel(nn.Module):
         self.use_traj_fix     = use_traj_fix
         self.use_map_per_step = use_map_per_step
         self.use_ar           = use_ar
+        self.use_lane_anchor  = use_lane_anchor
         self.cond_dim         = cond_dim
         D = d_model
         H = ar_hidden
@@ -105,32 +107,43 @@ class RiskConditionedModel(nn.Module):
                 nn.Linear(H, 80 * 2),
             )
 
-    def _mlp_decode(self, context, mode_emb, lane_feat, T=80):
+    def _mlp_decode(self, context, mode_emb, lane_feat, lane_pts=None, T=80):
         """
         Non-AR MLP 디코더.
 
         context   : [B, D*2]
         mode_emb  : [K, D]
         lane_feat : [B, 50, D]
-        반환      : [B, K, T, 2]  ego-relative 절대 좌표
+        lane_pts  : [B, 50, 2]  lane endpoint xy (use_lane_anchor=True 시)
+        반환      : ([B, K, T, 2], [B, K, 50])
         """
         B = context.shape[0]
         K = self.K
         L = lane_feat.shape[1]
 
-        ctx_bk  = context.unsqueeze(1).expand(B, K, -1).reshape(B*K, -1)        # [B*K, D*2]
-        mode_bk = mode_emb.unsqueeze(0).expand(B, K, -1).reshape(B*K, -1)       # [B*K, D]
+        ctx_bk  = context.unsqueeze(1).expand(B, K, -1).reshape(B*K, -1)          # [B*K, D*2]
+        mode_bk = mode_emb.unsqueeze(0).expand(B, K, -1).reshape(B*K, -1)         # [B*K, D]
         lane_bk = lane_feat.unsqueeze(1).expand(B, K, L, -1).reshape(B*K, L, -1)  # [B*K, 50, D]
 
         # context + mode → query, 차선 cross-attention
-        query = self.lane_query_proj(torch.cat([ctx_bk, mode_bk], dim=-1))       # [B*K, D]
-        lane_ctx, _ = self.lane_attn(query.unsqueeze(1), lane_bk, lane_bk)       # [B*K, 1, D]
-        lane_ctx = lane_ctx.squeeze(1)                                            # [B*K, D]
+        query = self.lane_query_proj(torch.cat([ctx_bk, mode_bk], dim=-1))         # [B*K, D]
+        lane_ctx, attn_w = self.lane_attn(query.unsqueeze(1), lane_bk, lane_bk)    # [B*K, 1, D], [B*K, 1, L]
+        lane_ctx  = lane_ctx.squeeze(1)                                             # [B*K, D]
+        attn_w_sq = attn_w.squeeze(1)                                              # [B*K, L]
 
         # MLP → 80 timestep 한 번에 예측 (절대 좌표)
-        feat = torch.cat([query, lane_ctx], dim=-1)                               # [B*K, D*2]
-        traj = self.traj_mlp(feat).reshape(B*K, T, 2)                            # [B*K, T, 2]
-        return traj.reshape(B, K, T, 2)
+        feat = torch.cat([query, lane_ctx], dim=-1)                                 # [B*K, D*2]
+        traj = self.traj_mlp(feat).reshape(B*K, T, 2)                              # [B*K, T, 2]
+
+        # lane endpoint anchor: 각 mode를 attention-weighted lane endpoint로 편향
+        # mode k가 lane l에 집중 → 그 lane의 공간 방향이 traj에 반영됨
+        if self.use_lane_anchor and lane_pts is not None:
+            lane_pts_bk = lane_pts.unsqueeze(1).expand(B, K, L, 2).reshape(B*K, L, 2)
+            anchor = (attn_w_sq.unsqueeze(-1) * lane_pts_bk).sum(dim=1)            # [B*K, 2]
+            t_ratio = torch.linspace(0, 1, T, device=traj.device).view(1, T, 1)   # ramp 0→1
+            traj = traj + anchor.unsqueeze(1) * t_ratio                            # t=0: no offset, t=T-1: full anchor
+
+        return traj.reshape(B, K, T, 2), attn_w_sq.reshape(B, K, L)
 
     def _ar_decode(self, context, mode_emb, lane_feat, T=80, gt_traj=None, tf_prob=1.0):
         """
@@ -239,11 +252,15 @@ class RiskConditionedModel(nn.Module):
         if self.use_ar:
             traj = self._ar_decode(context, mode_emb, lane_feat, T=80,
                                    gt_traj=gt_traj, tf_prob=tf_prob)       # [B, K, 80, 2]
+            lane_attn_w = None
         else:
-            traj = self._mlp_decode(context, mode_emb, lane_feat, T=80)   # [B, K, 80, 2]
+            lane_pts = map_scene[:, :, -1, :2] if self.use_lane_anchor else None
+            traj, lane_attn_w = self._mlp_decode(
+                context, mode_emb, lane_feat, lane_pts=lane_pts, T=80)    # [B, K, 80, 2], [B, K, 50]
 
         return {
-            "trajectory":  traj,          # [B, K, 80, 2]
-            "risk_logits": risk_logits,   # [B, 3] or None
-            "lane_prob":   lane_prob,     # [B, 50] or None
+            "trajectory":   traj,          # [B, K, 80, 2]
+            "risk_logits":  risk_logits,   # [B, 3] or None
+            "lane_prob":    lane_prob,     # [B, 50] or None
+            "lane_attn_w":  lane_attn_w,  # [B, K, 50] or None
         }
