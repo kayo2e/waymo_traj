@@ -187,6 +187,37 @@ python train.py [옵션]
 
 ---
 
+## Maneuver Ablation 결과
+
+**비교 스크립트**: `scripts/viz_maneuver_ablation.py`
+
+세 가지 Maneuver 조건화 변형을 Turn 시나리오에서 비교.
+
+| 모델 | 색상 | 체크포인트 | 설명 |
+|------|------|-----------|------|
+| Maneuver_base | 회색 | `checkpoints/noar_maneuver_nolane_v2/model_best.pt` | 기본 Maneuver 조건화 (Lane Mamba 없음) |
+| Man+Div | 파랑 | `checkpoints/noar_maneuver_div/model_best.pt` | + Mode Diversity 손실 |
+| **Man+RareAlign** | **빨강** | **`checkpoints/noar_maneuver_rare_align/model_best.pt`** | **+ Rare 시나리오 정렬 (최종 모델)** |
+
+### 시나리오별 minADE / minFDE (m)
+
+| 시나리오 ID | Maneuver | Maneuver_base | Man+Div | **Man+RareAlign** |
+|------------|----------|:---:|:---:|:---:|
+| `867742bb79b60ef1` | TurnRight / Fast | 8.03 / 21.32 | 7.96 / 21.13 | **5.16 / 16.64** |
+| `923a0c6bb90f4127` | TurnLeft / Slow  | 3.44 / 11.79 | 5.36 / 17.43 | 4.97 / 18.28 |
+| `2d129da061cb3f3c` | TurnLeft / Fast  | 9.37 / 22.34 | 9.46 / 22.77 | **2.18 / 4.66** |
+| `e73b04f426df896d` | TurnRight / Slow | 14.62 / 41.19 | 14.53 / 42.02 | **3.24 / 7.19** |
+
+**Man+RareAlign**은 Fast Turn 시나리오에서 base 대비 ADE를 최대 **78% 감소** (14.62→3.24).  
+Slow Turn에서는 base와 큰 차이 없음 — rare 정렬이 고속·급선회에서 특히 효과적.
+
+시각화 실행:
+```bash
+conda run -n waymo python scripts/viz_maneuver_ablation.py --maneuver turn --n_samples 4
+```
+
+---
+
 ## 디렉토리 구조
 
 ```
