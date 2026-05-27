@@ -67,6 +67,12 @@ MODELS = [
         dict(cond_dim=9, use_lane_mamba=False),
         "cond_labels",
     ),
+    (
+        "Man+RareAlign",
+        "checkpoints/noar_maneuver_rare_align/model_best.pt",
+        dict(cond_dim=9, use_lane_mamba=False),
+        "cond_labels",
+    ),
 ]
 
 

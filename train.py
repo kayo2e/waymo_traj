@@ -135,6 +135,8 @@ def parse_args():
                    help="AR LSTM 디코더 사용 (기본: Non-AR MLP 디코더)")
     p.add_argument("--lam_align", type=float, default=0.0,
                    help="Mode-Maneuver alignment loss 가중치 (cond_type=maneuver 전용, 0이면 비활성)")
+    p.add_argument("--rare_align", action="store_true",
+                   help="lam_align을 LC/Turn(mode 2~5)에만 적용, Turn(4,5)에는 3× 가중치 (Stop/Straight 제외)")
     p.add_argument("--lam_div",  type=float, default=0.0,
                    help="Lane diversity loss 가중치 — mode 간 lane attention 직교성 강제 (0이면 비활성)")
     p.add_argument("--use_lane_anchor", action="store_true",
@@ -172,7 +174,8 @@ def _prep_inputs(feats: dict, device):
 def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
                         log_every=50, max_scenarios=None, tf_prob=1.0,
                         loss_mode="laplace", laplace_b=1.0, use_risk_prefix=True,
-                        label_key="risk_labels", lam_align=0.0, lam_div=0.0):
+                        label_key="risk_labels", lam_align=0.0, lam_div=0.0,
+                        rare_align=False):
     """캐시(.npz) 기반 epoch — TFRecord 파싱 없이 빠른 학습."""
     bce = nn.BCEWithLogitsLoss()
     total_loss = total_ade = total_fde = total_mr = 0.0
@@ -257,7 +260,15 @@ def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
             # Mode-Maneuver alignment: GT maneuver class에 해당하는 mode를 직접 supervise
             if train and lam_align > 0 and label_key == "cond_labels" and risk_gt is not None:
                 maneuver_idx = int(risk_gt[0, :6].argmax())
-                loss = loss + lam_align * traj_losses[maneuver_idx]
+                if rare_align:
+                    # LC(2,3) + Turn(4,5)에만 적용 — Stop(0)/Straight(1) 제외
+                    # Turn에는 3× 가중치로 구조적 Turn 예측 강화
+                    if maneuver_idx in [4, 5]:
+                        loss = loss + lam_align * 3.0 * traj_losses[maneuver_idx]
+                    elif maneuver_idx in [2, 3]:
+                        loss = loss + lam_align * traj_losses[maneuver_idx]
+                else:
+                    loss = loss + lam_align * traj_losses[maneuver_idx]
 
             # Lane diversity loss: mode 간 lane attention 직교성 강제
             # gram[i,j] = cos_sim(attn_w[i], attn_w[j]) — off-diagonal 최소화
@@ -468,7 +479,7 @@ def main():
     print(f"TrajFix    : {use_traj_fix}")
     print(f"CondType   : {args.cond_type}  (cond_dim={cond_dim})")
     print(f"Decoder    : {'AR-LSTM' if use_ar else 'Non-AR-MLP'}")
-    print(f"LaneAnchor : {args.use_lane_anchor}  λ_div={args.lam_div}")
+    print(f"LaneAnchor : {args.use_lane_anchor}  λ_div={args.lam_div}  λ_align={args.lam_align}  rare_align={args.rare_align}")
     print()
 
     if args.use_traj_gpt:
@@ -536,7 +547,7 @@ def main():
             loss_mode=args.loss, laplace_b=args.laplace_b,
             use_risk_prefix=use_risk_prefix,
             label_key=label_key, lam_align=args.lam_align,
-            lam_div=args.lam_div,
+            lam_div=args.lam_div, rare_align=args.rare_align,
         )
         print(f"  [train] DONE  loss={tr_loss:.4f}  "
               f"minADE={tr_ade:.3f}m  minFDE={tr_fde:.3f}m  MR={tr_mr:.3f}  "
