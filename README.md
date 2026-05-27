@@ -192,23 +192,45 @@ python train.py [옵션]
 ```
 waymo_traj/
 ├── train.py                  # 학습 진입점
-├── evaluate.py               # 모델 비교 평가
-├── smoke_test.py             # 더미 데이터 동작 확인
+├── evaluate.py               # 모델 평가
+├── preprocess.py             # TFRecord → cache/ 전처리
+├── config.yaml               # 하이퍼파라미터
 ├── requirements.txt
+├── scripts/                  # 분석·시각화 보조 스크립트
+│   ├── run_experiments.sh    # 실험 일괄 실행
+│   ├── smoke_test.py         # 더미 데이터 동작 확인
+│   ├── quick_validate.py     # 빠른 검증
+│   ├── train_lstm.py         # LSTM 베이스라인 학습
+│   ├── debug_lstm.py         # LSTM 디버그
+│   ├── plot_curves.py        # 학습 곡선 시각화
+│   ├── visualize_comparison.py
+│   ├── visualize_modes.py
+│   ├── visualize_rcm_compare.py
+│   ├── visualize_risk_ablation.py
+│   ├── visualize_3model_compare.py
+│   └── viz_ablation_e73b04f.py
+├── outputs/
+│   └── logs/                 # 학습 로그 (gitignore 제외)
+├── notebooks/
+│   └── pipeline.ipynb
 └── src/
     ├── data/
     │   ├── tfrecord.py       # TFRecord 이터레이터 (TF 없음)
     │   └── features.py       # 피처 추출 + extract_risk_label
     ├── models/
-    │   ├── encoders.py       # JointPolylineEncoder, MultiStreamMambaEncoder
-    │   │                     # (반환: global_feat, lane_feat)
+    │   ├── encoders.py       # JointPolylineEncoder
     │   ├── lane_mamba.py     # RiskAwareLaneMamba (HF Mamba 기반)
     │   ├── risk_fusion.py    # RiskFusion (global_feat + risk_emb concat)
     │   ├── motion_model.py   # RiskConditionedModel
     │   └── baselines.py      # ConstantVelocityBaseline, LSTMBaseline
-    └── eval/
-        └── metrics.py        # minADE, minFDE, MR
+    ├── eval/
+    │   └── metrics.py        # minADE, minFDE, MR
+    └── viz/
+        └── plot.py
 ```
+
+> `cache/`, `checkpoints/`, `libs/` 는 `.gitignore` 로 제외되어 있습니다.
+> `cache/` 는 `python preprocess.py` 로 재생성하세요.
 
 ---
 
