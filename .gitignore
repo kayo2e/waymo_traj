@@ -1,11 +1,22 @@
 # Data (too large for GitHub)
 waymo-motion-v1_3_0/
 
+# Preprocessed cache (binary, regenerate with preprocess.py)
+cache/
+
 # Checkpoints
 checkpoints/
 
+# Local pip packages / virtual environments
+libs/
+yaml/
+typing_extensions.py
+*.so
+.venv/
+venv/
+
 # Generated outputs
-trajectory_comparison.png
+outputs/figures/
 *.png
 *.jpg
 
