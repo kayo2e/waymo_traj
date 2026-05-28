@@ -7,6 +7,56 @@ from src.models.encoders    import MultiStreamMambaEncoder
 from src.models.risk_fusion import RiskFusion
 
 
+class CausalTrajDecoder(nn.Module):
+    """
+    GPT-style causal trajectory decoder.
+
+    T time-step queries attend causally to each other (causal self-attn)
+    and cross-attend to lane features.  Context (scene + mode) is injected
+    as an additive bias broadcast across all time steps.
+
+    Single parallel forward pass — efficient, yet temporally causal.
+
+    Args:
+        d_model     : hidden dim (must match lane_feat dim)
+        context_dim : dim of the per-mode context vector fed as bias
+        n_heads     : attention heads
+        n_layers    : number of TransformerDecoderLayer stacks
+        T           : future trajectory length (timesteps)
+    """
+
+    def __init__(self, d_model: int, context_dim: int,
+                 n_heads: int = 4, n_layers: int = 2, T: int = 80):
+        super().__init__()
+        D = d_model
+        self.T = T
+        self.time_queries = nn.Embedding(T, D)
+        self.ctx_proj     = nn.Linear(context_dim, D)
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=D, nhead=n_heads, dim_feedforward=D * 4,
+            dropout=0.1, batch_first=True, norm_first=True,
+        )
+        self.decoder  = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
+        self.out_proj = nn.Linear(D, 2)
+
+    def forward(self, context: torch.Tensor, lane_feat: torch.Tensor) -> torch.Tensor:
+        """
+        context  : [BK, context_dim]  per-mode scene+mode context
+        lane_feat: [BK, L, D]         encoded lane tokens (memory)
+        Returns  : [BK, T, 2]         ego-relative future positions
+        """
+        BK = context.shape[0]
+        t_idx = torch.arange(self.T, device=context.device)
+        tgt = self.time_queries(t_idx).unsqueeze(0).expand(BK, -1, -1)  # [BK, T, D]
+        tgt = tgt + self.ctx_proj(context).unsqueeze(1)                  # inject context
+        causal_mask = torch.triu(
+            torch.full((self.T, self.T), float('-inf'), device=context.device),
+            diagonal=1,
+        )
+        out = self.decoder(tgt, lane_feat, tgt_mask=causal_mask)         # [BK, T, D]
+        return self.out_proj(out)                                         # [BK, T, 2]
+
+
 class RiskConditionedModel(nn.Module):
     """
     K=6 궤적 예측 모델.
@@ -41,6 +91,7 @@ class RiskConditionedModel(nn.Module):
                  use_traj_fix: bool = True,
                  use_map_per_step: bool = False,
                  use_ar: bool = False,
+                 use_causal_attn: bool = False,
                  use_lane_anchor: bool = False,
                  cond_dim: int = 3):
         super().__init__()
@@ -50,6 +101,7 @@ class RiskConditionedModel(nn.Module):
         self.use_traj_fix     = use_traj_fix
         self.use_map_per_step = use_map_per_step
         self.use_ar           = use_ar
+        self.use_causal_attn  = use_causal_attn
         self.use_lane_anchor  = use_lane_anchor
         self.cond_dim         = cond_dim
         D = d_model
@@ -93,6 +145,13 @@ class RiskConditionedModel(nn.Module):
                 lstm_in = 2 + D * 2
             self.lstm_cell = nn.LSTMCell(input_size=lstm_in, hidden_size=H)
             self.out_proj  = nn.Linear(H, 2)
+        elif use_causal_attn:
+            # ── Causal Transformer 디코더 (GPT-style) ─────────────────────────
+            # context[D*2] + mode[D] → [D*3] context_dim
+            # T time-step queries: causal self-attn + cross-attn(lane) → [T,2]
+            self.causal_decoder = CausalTrajDecoder(
+                d_model=D, context_dim=D * 3, n_heads=4, n_layers=2,
+            )
         else:
             # ── Non-AR MLP 디코더 ──────────────────────────────────────────────
             # context[D*2] + mode[D] → query[D] → cross-attn(lane) → MLP → [80*2]
@@ -144,6 +203,27 @@ class RiskConditionedModel(nn.Module):
             traj = traj + anchor.unsqueeze(1) * t_ratio                            # t=0: no offset, t=T-1: full anchor
 
         return traj.reshape(B, K, T, 2), attn_w_sq.reshape(B, K, L)
+
+    def _causal_decode(self, context, mode_emb, lane_feat, T=80):
+        """
+        GPT-style causal decoder.
+
+        context  : [B, D*2]
+        mode_emb : [K, D]
+        lane_feat: [B, 50, D]
+        반환     : ([B, K, T, 2], None)
+        """
+        B = context.shape[0]
+        K = self.K
+        L = lane_feat.shape[1]
+
+        ctx_bk  = context.unsqueeze(1).expand(B, K, -1).reshape(B*K, -1)
+        mode_bk = mode_emb.unsqueeze(0).expand(B, K, -1).reshape(B*K, -1)
+        lane_bk = lane_feat.unsqueeze(1).expand(B, K, L, -1).reshape(B*K, L, -1)
+
+        cond = torch.cat([ctx_bk, mode_bk], dim=-1)   # [B*K, D*3]
+        traj = self.causal_decoder(cond, lane_bk)      # [B*K, T, 2]
+        return traj.reshape(B, K, T, 2), None
 
     def _ar_decode(self, context, mode_emb, lane_feat, T=80, gt_traj=None, tf_prob=1.0):
         """
@@ -253,6 +333,9 @@ class RiskConditionedModel(nn.Module):
             traj = self._ar_decode(context, mode_emb, lane_feat, T=80,
                                    gt_traj=gt_traj, tf_prob=tf_prob)       # [B, K, 80, 2]
             lane_attn_w = None
+        elif self.use_causal_attn:
+            traj, lane_attn_w = self._causal_decode(
+                context, mode_emb, lane_feat, T=80)                        # [B, K, 80, 2], None
         else:
             lane_pts = map_scene[:, :, -1, :2] if self.use_lane_anchor else None
             traj, lane_attn_w = self._mlp_decode(

@@ -105,6 +105,8 @@ def parse_args():
     p.add_argument("--device",    type=str,   default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--log_every",      type=int,  default=50)
     p.add_argument("--resume",         type=str,  default=None)
+    p.add_argument("--resume_model_only", action="store_true",
+                   help="model weights만 로드 (optimizer/scheduler는 새로 시작)")
     p.add_argument("--max_scenarios",  type=int,  default=None,
                    help="에폭당 최대 시나리오 수 (빠른 테스트용)")
     p.add_argument("--loss",      type=str,   default="laplace",
@@ -133,6 +135,8 @@ def parse_args():
                    help="매 스텝 map cross-attention 비활성화 (ablation)")
     p.add_argument("--use_ar", action="store_true",
                    help="AR LSTM 디코더 사용 (기본: Non-AR MLP 디코더)")
+    p.add_argument("--use_causal_attn", action="store_true",
+                   help="GPT-style Causal Transformer 디코더 사용 (--use_ar보다 우선순위 낮음)")
     p.add_argument("--lam_align", type=float, default=0.0,
                    help="Mode-Maneuver alignment loss 가중치 (cond_type=maneuver 전용, 0이면 비활성)")
     p.add_argument("--rare_align", action="store_true",
@@ -467,6 +471,7 @@ def main():
     use_traj_fix    = not args.no_traj_fix
     use_map_per_step = not args.no_map_per_step
     use_ar          = args.use_ar
+    use_causal_attn = args.use_causal_attn
     cond_dim        = 9 if args.cond_type == "maneuver" else (1 if args.cond_type == "none" else 3)
     label_key       = "cond_labels" if args.cond_type == "maneuver" else (None if args.cond_type == "none" else "risk_labels")
     ckpt_dir = os.path.join(CKPT_DIR, args.run_name)
@@ -478,7 +483,13 @@ def main():
     print(f"TrajGPT    : {args.use_traj_gpt}")
     print(f"TrajFix    : {use_traj_fix}")
     print(f"CondType   : {args.cond_type}  (cond_dim={cond_dim})")
-    print(f"Decoder    : {'AR-LSTM' if use_ar else 'Non-AR-MLP'}")
+    if use_ar:
+        dec_str = "AR-LSTM"
+    elif use_causal_attn:
+        dec_str = "Causal-Transformer"
+    else:
+        dec_str = "Non-AR-MLP"
+    print(f"Decoder    : {dec_str}")
     print(f"LaneAnchor : {args.use_lane_anchor}  λ_div={args.lam_div}  λ_align={args.lam_align}  rare_align={args.rare_align}")
     print()
 
@@ -495,6 +506,7 @@ def main():
                                      use_traj_fix=use_traj_fix,
                                      use_map_per_step=use_map_per_step,
                                      use_ar=use_ar,
+                                     use_causal_attn=use_causal_attn,
                                      use_lane_anchor=args.use_lane_anchor,
                                      cond_dim=cond_dim).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
@@ -507,15 +519,18 @@ def main():
     if args.resume:
         ckpt = torch.load(args.resume, map_location="cpu")
         model.load_state_dict(ckpt["model"])
-        if "optimizer" in ckpt:
-            opt_state = ckpt["optimizer"]
-            # move step tensors to CPU to avoid AdamW capturable=False assertion
-            for state in opt_state.get("state", {}).values():
-                if "step" in state and isinstance(state["step"], torch.Tensor):
-                    state["step"] = state["step"].cpu()
-            optimizer.load_state_dict(opt_state)
-        start_epoch = ckpt.get("epoch", 0) + 1
-        print(f"Resumed from {args.resume}  (epoch {start_epoch})")
+        if args.resume_model_only:
+            print(f"Loaded model weights from {args.resume}  (optimizer reset, lr={args.lr})")
+        else:
+            if "optimizer" in ckpt:
+                opt_state = ckpt["optimizer"]
+                # move step tensors to CPU to avoid AdamW capturable=False assertion
+                for state in opt_state.get("state", {}).values():
+                    if "step" in state and isinstance(state["step"], torch.Tensor):
+                        state["step"] = state["step"].cpu()
+                optimizer.load_state_dict(opt_state)
+            start_epoch = ckpt.get("epoch", 0) + 1
+            print(f"Resumed from {args.resume}  (epoch {start_epoch})")
 
     best_eval_ade = float("inf")
 
