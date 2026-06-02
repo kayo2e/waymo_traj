@@ -28,6 +28,20 @@ class JointPolylineEncoder(nn.Module):
         return feat
 
 
+class SocialTemporalEncoder(nn.Module):
+    """Per-agent GRU temporal encoder: [B, N, T, F] → [B, N, D]"""
+    def __init__(self, input_dim, d_model):
+        super().__init__()
+        self.proj = nn.Linear(input_dim, d_model)
+        self.gru  = nn.GRU(d_model, d_model, batch_first=True)
+
+    def forward(self, x):
+        B, N, T, F = x.shape
+        h = self.proj(x.reshape(B * N, T, F))
+        _, h_n = self.gru(h)
+        return h_n.squeeze(0).reshape(B, N, -1)
+
+
 class MultiStreamMambaEncoder(nn.Module):
     """
     Joint Transformer 인코더.
@@ -52,17 +66,20 @@ class MultiStreamMambaEncoder(nn.Module):
     """
 
     def __init__(self, agent_dim=10, map_dim=6, d_model=128, n_layers=2, n_heads=4,
-                 use_risk_prefix=True, use_traj_fix=True, cond_dim=3):
+                 use_risk_prefix=True, use_traj_fix=True, cond_dim=3,
+                 use_social_temporal=False):
         super().__init__()
         D = d_model
         self.use_risk_prefix = use_risk_prefix
         self.use_traj_fix    = use_traj_fix
 
         # ── 각 모달리티 → D차원 토큰 ────────────────────────────────────────────
-        self.ego_proj   = nn.Linear(agent_dim, D)             # [B, T, D]
-        self.social_enc = JointPolylineEncoder(agent_dim, D)  # [B, N, D]
-        self.map_enc    = JointPolylineEncoder(map_dim, D)    # [B, 50, D]
-        self.traf_proj  = nn.Linear(1, D)                     # [B, 6, D]
+        self.ego_proj   = nn.Linear(agent_dim, D)
+        self.social_enc = (SocialTemporalEncoder(agent_dim, D)
+                           if use_social_temporal
+                           else JointPolylineEncoder(agent_dim, D))
+        self.map_enc    = JointPolylineEncoder(map_dim, D)
+        self.traf_proj  = nn.Linear(1, D)
 
         # ── Condition prefix token 투영 ──────────────────────────────────────
         if use_risk_prefix:
