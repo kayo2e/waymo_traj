@@ -143,6 +143,19 @@ def parse_args():
                    help="lam_align을 LC/Turn(mode 2~5)에만 적용, Turn(4,5)에는 3× 가중치 (Stop/Straight 제외)")
     p.add_argument("--lam_div",  type=float, default=0.0,
                    help="Lane diversity loss 가중치 — mode 간 lane attention 직교성 강제 (0이면 비활성)")
+    p.add_argument("--d_model",  type=int,   default=128,  help="인코더/디코더 hidden dim")
+    p.add_argument("--n_layers", type=int,   default=2,    help="Transformer 레이어 수")
+    p.add_argument("--n_heads",  type=int,   default=4,    help="attention heads 수")
+    p.add_argument("--social_temporal", action="store_true",
+                   help="social agents에 GRU temporal encoder 사용 (max-pool 대신)")
+    p.add_argument("--use_goal_cond", action="store_true",
+                   help="Goal-conditioned causal decoder (K goals → trajectory conditioning)")
+    p.add_argument("--lam_goal", type=float, default=0.5,
+                   help="Goal prediction loss 가중치 (use_goal_cond 시)")
+    p.add_argument("--use_lane_goal", action="store_true",
+                   help="Lane-anchored goal: K mode queries cross-attend to lane tokens (ablation vs --use_goal_cond)")
+    p.add_argument("--lam_lane_goal", type=float, default=0.5,
+                   help="Lane goal supervision loss 가중치 (winner mode → nearest lane CE loss)")
     p.add_argument("--use_lane_anchor", action="store_true",
                    help="각 mode의 lane attention으로 trajectory anchor offset 추가 (구조적 방향 사전화)")
     return p.parse_args()
@@ -179,7 +192,7 @@ def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
                         log_every=50, max_scenarios=None, tf_prob=1.0,
                         loss_mode="laplace", laplace_b=1.0, use_risk_prefix=True,
                         label_key="risk_labels", lam_align=0.0, lam_div=0.0,
-                        rare_align=False):
+                        rare_align=False, lam_goal=0.0, lam_lane_goal=0.0):
     """캐시(.npz) 기반 epoch — TFRecord 파싱 없이 빠른 학습."""
     bce = nn.BCEWithLogitsLoss()
     total_loss = total_ade = total_fde = total_mr = 0.0
@@ -246,12 +259,13 @@ def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
                 for k in range(K)
             ])
 
+            with torch.no_grad():
+                best_k = int(traj_losses.argmin())
+
             if loss_mode == "laplace":
                 log_liks = -traj_losses / laplace_b
                 L_traj = math.log(K) - torch.logsumexp(log_liks, dim=0)
             else:
-                with torch.no_grad():
-                    best_k = int(traj_losses.argmin())
                 wta_weights = torch.full((K,), 0.3, device=device)
                 wta_weights[best_k] = 1.0
                 L_traj = (traj_losses * wta_weights).sum()
@@ -274,17 +288,41 @@ def run_one_epoch_cache(model, optimizer, npz_paths, device, train,
                 else:
                     loss = loss + lam_align * traj_losses[maneuver_idx]
 
-            # Lane diversity loss: mode 간 lane attention 직교성 강제
-            # gram[i,j] = cos_sim(attn_w[i], attn_w[j]) — off-diagonal 최소화
+            # Lane diversity loss
             if train and lam_div > 0:
                 lane_attn_w = out.get("lane_attn_w")
                 if lane_attn_w is not None:
                     attn = lane_attn_w[0]                                   # [K, 50]
-                    attn_n = F.normalize(attn, dim=-1)                      # [K, 50]
-                    gram = attn_n @ attn_n.t()                              # [K, K]
+                    attn_n = F.normalize(attn, dim=-1)
+                    gram = attn_n @ attn_n.t()
                     eye  = torch.eye(K, device=gram.device)
                     L_div = (gram * (1 - eye)).sum() / (K * (K - 1))
                     loss = loss + lam_div * L_div
+
+            # Goal prediction loss: WTA winner mode의 goal이 GT endpoint에 근접
+            if train and lam_goal > 0:
+                goals = out.get("goals")
+                if goals is not None:
+                    gt_endpoint = gt_traj[valid_idx[-1]]                    # [2]
+                    goal_losses = torch.stack([
+                        F.l1_loss(goals[0, k], gt_endpoint) for k in range(K)
+                    ])
+                    loss = loss + lam_goal * goal_losses[best_k]
+
+            # Lane goal supervision: winner mode가 GT endpoint에 가장 가까운 차선 선택
+            if train and lam_lane_goal > 0:
+                lane_goal_logits = out.get("lane_goal_logits")             # [B, K, 50] or None
+                if lane_goal_logits is not None:
+                    gt_endpoint    = gt_traj[valid_idx[-1]]                # [2]
+                    lane_endpoints = map_scene[0, :, -1, :2]              # [50, 2]
+                    valid_lanes    = (lane_endpoints.abs().sum(-1) > 0.1)  # [50]
+                    if valid_lanes.any():
+                        dist        = (lane_endpoints - gt_endpoint).norm(dim=-1)
+                        dist        = dist.masked_fill(~valid_lanes, 1e9)
+                        nearest     = dist.argmin().unsqueeze(0)           # [1]
+                        L_lane      = F.cross_entropy(
+                            lane_goal_logits[0, best_k].unsqueeze(0), nearest)
+                        loss = loss + lam_lane_goal * L_lane
 
             if train:
                 optimizer.zero_grad()
@@ -499,7 +537,8 @@ def main():
         model = TrajGPT(d_model=128, K=6, n_layers=4, n_heads=4, enc_layers=2,
                         decoder_type=decoder_type).to(device)
     else:
-        model = RiskConditionedModel(d_model=128, K=6, n_layers=2,
+        model = RiskConditionedModel(d_model=args.d_model, K=6, n_layers=args.n_layers,
+                                     n_heads=args.n_heads,
                                      map_dim=MAP_DIM,
                                      use_lane_mamba=use_lane_mamba,
                                      use_risk_prefix=use_risk_prefix,
@@ -508,6 +547,9 @@ def main():
                                      use_ar=use_ar,
                                      use_causal_attn=use_causal_attn,
                                      use_lane_anchor=args.use_lane_anchor,
+                                     use_goal_cond=args.use_goal_cond,
+                                     use_lane_goal=args.use_lane_goal,
+                                     use_social_temporal=args.social_temporal,
                                      cond_dim=cond_dim).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.wd)
@@ -563,6 +605,7 @@ def main():
             use_risk_prefix=use_risk_prefix,
             label_key=label_key, lam_align=args.lam_align,
             lam_div=args.lam_div, rare_align=args.rare_align,
+            lam_goal=args.lam_goal, lam_lane_goal=args.lam_lane_goal,
         )
         print(f"  [train] DONE  loss={tr_loss:.4f}  "
               f"minADE={tr_ade:.3f}m  minFDE={tr_fde:.3f}m  MR={tr_mr:.3f}  "
@@ -577,7 +620,7 @@ def main():
                 loss_mode=args.loss, laplace_b=args.laplace_b,
                 use_risk_prefix=use_risk_prefix,
                 label_key=label_key, lam_align=0.0,
-                lam_div=0.0,
+                lam_div=0.0, lam_goal=0.0, lam_lane_goal=0.0,
             )
         print(f"  [eval]  DONE  loss={ev_loss:.4f}  "
               f"minADE={ev_ade:.3f}m  minFDE={ev_fde:.3f}m  MR={ev_mr:.3f}  "

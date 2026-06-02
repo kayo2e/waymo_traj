@@ -7,6 +7,53 @@ from src.models.encoders    import MultiStreamMambaEncoder
 from src.models.risk_fusion import RiskFusion
 
 
+class GoalHead(nn.Module):
+    """Context → K goal positions [B, K, 2]."""
+    def __init__(self, context_dim, K):
+        super().__init__()
+        self.K = K
+        self.head = nn.Sequential(
+            nn.Linear(context_dim, context_dim),
+            nn.ReLU(),
+            nn.Linear(context_dim, K * 2),
+        )
+
+    def forward(self, context):
+        return self.head(context).reshape(context.shape[0], self.K, 2)
+
+
+class LaneGoalHead(nn.Module):
+    """
+    Lane-anchored goal via cross-attention.
+
+    K mode queries cross-attend to lane tokens → K goal positions.
+    각 mode가 독립적으로 관련 차선을 선택 → fully differentiable.
+
+    별도 lane_scorer가 [B, K, 50] logits를 출력해 auxiliary supervision 제공:
+    winner mode는 GT endpoint에 가장 가까운 차선에 높은 점수를 줘야 함.
+
+    Input : lane_feat   [B, 50, D]
+    Output: goals       [B, K, 2]   ego-relative goal positions
+            lane_logits [B, K, 50]  per-mode lane scoring logits (for loss)
+    """
+    def __init__(self, d_model, K, n_heads=4):
+        super().__init__()
+        self.K = K
+        self.mode_queries = nn.Embedding(K, d_model)
+        self.cross_attn   = nn.MultiheadAttention(
+            d_model, n_heads, batch_first=True, dropout=0.1)
+        self.out_proj     = nn.Linear(d_model, 2)
+        self.lane_scorer  = nn.Linear(d_model, K)   # [B,50,D] → [B,50,K] → [B,K,50]
+
+    def forward(self, lane_feat):
+        B = lane_feat.shape[0]
+        q = self.mode_queries.weight.unsqueeze(0).expand(B, -1, -1)   # [B, K, D]
+        out, _ = self.cross_attn(q, lane_feat, lane_feat)              # [B, K, D]
+        goals       = self.out_proj(out)                                # [B, K, 2]
+        lane_logits = self.lane_scorer(lane_feat).permute(0, 2, 1)    # [B, K, 50]
+        return goals, lane_logits
+
+
 class CausalTrajDecoder(nn.Module):
     """
     GPT-style causal trajectory decoder.
@@ -85,6 +132,7 @@ class RiskConditionedModel(nn.Module):
 
     def __init__(self, agent_dim: int = 10, map_dim: int = 8,
                  d_model: int = 128, K: int = 6, n_layers: int = 2,
+                 n_heads: int = 4,
                  ar_hidden: int = 256,
                  use_lane_mamba: bool = True,
                  use_risk_prefix: bool = True,
@@ -93,6 +141,9 @@ class RiskConditionedModel(nn.Module):
                  use_ar: bool = False,
                  use_causal_attn: bool = False,
                  use_lane_anchor: bool = False,
+                 use_goal_cond: bool = False,
+                 use_lane_goal: bool = False,
+                 use_social_temporal: bool = False,
                  cond_dim: int = 3):
         super().__init__()
         self.K                = K
@@ -100,19 +151,23 @@ class RiskConditionedModel(nn.Module):
         self.use_risk_prefix  = use_risk_prefix
         self.use_traj_fix     = use_traj_fix
         self.use_map_per_step = use_map_per_step
-        self.use_ar           = use_ar
-        self.use_causal_attn  = use_causal_attn
-        self.use_lane_anchor  = use_lane_anchor
-        self.cond_dim         = cond_dim
+        self.use_ar             = use_ar
+        self.use_causal_attn    = use_causal_attn
+        self.use_lane_anchor    = use_lane_anchor
+        self.use_goal_cond      = use_goal_cond
+        self.use_lane_goal      = use_lane_goal
+        self.cond_dim           = cond_dim
         D = d_model
         H = ar_hidden
 
         # ── 인코더 → (global_feat [B,D], lane_feat [B,50,D]) ──────────────────
         self.encoder = MultiStreamMambaEncoder(
             agent_dim, map_dim, D, n_layers,
+            n_heads=n_heads,
             use_risk_prefix=use_risk_prefix,
             use_traj_fix=use_traj_fix,
             cond_dim=cond_dim,
+            use_social_temporal=use_social_temporal,
         )
 
         if use_risk_prefix:
@@ -146,12 +201,18 @@ class RiskConditionedModel(nn.Module):
             self.lstm_cell = nn.LSTMCell(input_size=lstm_in, hidden_size=H)
             self.out_proj  = nn.Linear(H, 2)
         elif use_causal_attn:
-            # ── Causal Transformer 디코더 (GPT-style) ─────────────────────────
-            # context[D*2] + mode[D] → [D*3] context_dim
-            # T time-step queries: causal self-attn + cross-attn(lane) → [T,2]
+            # context[D*2] + mode[D] (+ goal[D] if any goal conditioning) → context_dim
+            use_any_goal   = use_goal_cond or use_lane_goal
+            causal_ctx_dim = D * 4 if use_any_goal else D * 3
             self.causal_decoder = CausalTrajDecoder(
-                d_model=D, context_dim=D * 3, n_heads=4, n_layers=2,
+                d_model=D, context_dim=causal_ctx_dim, n_heads=n_heads, n_layers=2,
             )
+            if use_goal_cond:
+                self.goal_head = GoalHead(D * 2, K)
+            if use_lane_goal:
+                self.lane_goal_head = LaneGoalHead(D, K, n_heads=n_heads)
+            if use_any_goal:
+                self.goal_proj = nn.Linear(2, D)
         else:
             # ── Non-AR MLP 디코더 ──────────────────────────────────────────────
             # context[D*2] + mode[D] → query[D] → cross-attn(lane) → MLP → [80*2]
@@ -204,13 +265,12 @@ class RiskConditionedModel(nn.Module):
 
         return traj.reshape(B, K, T, 2), attn_w_sq.reshape(B, K, L)
 
-    def _causal_decode(self, context, mode_emb, lane_feat, T=80):
+    def _causal_decode(self, context, mode_emb, lane_feat, goals=None, T=80):
         """
-        GPT-style causal decoder.
-
         context  : [B, D*2]
         mode_emb : [K, D]
         lane_feat: [B, 50, D]
+        goals    : [B, K, 2] or None
         반환     : ([B, K, T, 2], None)
         """
         B = context.shape[0]
@@ -221,7 +281,13 @@ class RiskConditionedModel(nn.Module):
         mode_bk = mode_emb.unsqueeze(0).expand(B, K, -1).reshape(B*K, -1)
         lane_bk = lane_feat.unsqueeze(1).expand(B, K, L, -1).reshape(B*K, L, -1)
 
-        cond = torch.cat([ctx_bk, mode_bk], dim=-1)   # [B*K, D*3]
+        if goals is not None and (self.use_goal_cond or self.use_lane_goal):
+            goal_bk  = goals.reshape(B * K, 2)
+            goal_emb = self.goal_proj(goal_bk)                          # [B*K, D]
+            cond = torch.cat([ctx_bk, mode_bk, goal_emb], dim=-1)      # [B*K, D*4]
+        else:
+            cond = torch.cat([ctx_bk, mode_bk], dim=-1)                 # [B*K, D*3]
+
         traj = self.causal_decoder(cond, lane_bk)      # [B*K, T, 2]
         return traj.reshape(B, K, T, 2), None
 
@@ -334,16 +400,25 @@ class RiskConditionedModel(nn.Module):
                                    gt_traj=gt_traj, tf_prob=tf_prob)       # [B, K, 80, 2]
             lane_attn_w = None
         elif self.use_causal_attn:
+            lane_goal_logits = None
+            goals = None
+            if self.use_goal_cond:
+                goals = self.goal_head(context)                          # [B, K, 2]
+            if self.use_lane_goal:
+                lane_goals, lane_goal_logits = self.lane_goal_head(lane_feat)
+                goals = (goals + lane_goals) / 2 if goals is not None else lane_goals
             traj, lane_attn_w = self._causal_decode(
-                context, mode_emb, lane_feat, T=80)                        # [B, K, 80, 2], None
+                context, mode_emb, lane_feat, goals=goals, T=80)           # [B, K, 80, 2], None
         else:
             lane_pts = map_scene[:, :, -1, :2] if self.use_lane_anchor else None
             traj, lane_attn_w = self._mlp_decode(
                 context, mode_emb, lane_feat, lane_pts=lane_pts, T=80)    # [B, K, 80, 2], [B, K, 50]
 
         return {
-            "trajectory":   traj,          # [B, K, 80, 2]
-            "risk_logits":  risk_logits,   # [B, 3] or None
-            "lane_prob":    lane_prob,     # [B, 50] or None
-            "lane_attn_w":  lane_attn_w,  # [B, K, 50] or None
+            "trajectory":       traj,                                   # [B, K, 80, 2]
+            "risk_logits":      risk_logits,                            # [B, 3] or None
+            "lane_prob":        lane_prob,                              # [B, 50] or None
+            "lane_attn_w":      lane_attn_w,                           # [B, K, 50] or None
+            "goals":            goals if self.use_causal_attn else None,  # [B, K, 2] or None
+            "lane_goal_logits": lane_goal_logits,                      # [B, K, 50] or None
         }

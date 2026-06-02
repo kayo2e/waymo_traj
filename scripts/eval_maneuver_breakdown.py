@@ -32,45 +32,23 @@ N_MAN = len(MANEUVER_NAMES)
 # (display_name, checkpoint_path, model_kwargs, label_key)
 MODELS = [
     (
-        "NoCond",
-        "checkpoints/noar_nocond_v2/model_best.pt",
-        dict(cond_dim=1, use_lane_mamba=False),
-        None,
-    ),
-    (
-        "Maneuver_base",
-        "checkpoints/noar_maneuver_nolane_v2/model_best.pt",
-        dict(cond_dim=9, use_lane_mamba=False),
+        "Baseline",
+        "checkpoints/causal_maneuver_rare_align/model_best.pt",
+        dict(cond_dim=9, use_lane_mamba=False, use_causal_attn=True),
         "cond_labels",
     ),
     (
-        "Risk",
-        "checkpoints/noar_risk_nolane_v2/model_best.pt",
-        dict(cond_dim=3, use_lane_mamba=False),
-        "risk_labels",
-    ),
-    (
-        "Man+Div",
-        "checkpoints/noar_maneuver_div/model_best.pt",
-        dict(cond_dim=9, use_lane_mamba=False),
+        "GoalCond",
+        "checkpoints/exp_goal_cond/model_best.pt",
+        dict(cond_dim=9, use_lane_mamba=False, use_causal_attn=True,
+             use_goal_cond=True),
         "cond_labels",
     ),
     (
-        "Man+Div+Anchor",
-        "checkpoints/noar_maneuver_anchor_ramp/model_best.pt",
-        dict(cond_dim=9, use_lane_mamba=False, use_lane_anchor=True),
-        "cond_labels",
-    ),
-    (
-        "Man+Div+Align",
-        "checkpoints/noar_maneuver_div_align/model_best.pt",
-        dict(cond_dim=9, use_lane_mamba=False),
-        "cond_labels",
-    ),
-    (
-        "Man+RareAlign",
-        "checkpoints/noar_maneuver_rare_align/model_best.pt",
-        dict(cond_dim=9, use_lane_mamba=False),
+        "LaneGoal",
+        "checkpoints/exp_lane_goal/model_best.pt",
+        dict(cond_dim=9, use_lane_mamba=False, use_causal_attn=True,
+             use_lane_goal=True),
         "cond_labels",
     ),
 ]
@@ -104,6 +82,7 @@ def load_model(ckpt_path, model_kwargs, device):
         use_lane_mamba=False, use_risk_prefix=True,
         use_traj_fix=True, use_map_per_step=False,
         use_ar=False, use_lane_anchor=False, cond_dim=9,
+        use_causal_attn=False, use_goal_cond=False, use_lane_goal=False,
     )
     defaults.update(model_kwargs)
     model = RiskConditionedModel(**defaults).to(device)
