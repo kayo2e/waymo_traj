@@ -30,7 +30,7 @@ DATA_ROOT = os.path.join(ROOT, "waymo-motion-v1_3_0")
 sys.path.insert(0, ROOT)
 
 from src.data.tfrecord       import iter_tfrecords
-from src.data.features       import extract_features, extract_risk_label, MAP_DIM
+from src.data.features       import extract_features, extract_risk_label, MAP_DIM, AGENT_DIM, TRAF_DIM
 from src.models.motion_model import RiskConditionedModel
 from src.eval.metrics        import compute_minADE_FDE, compute_MR
 
@@ -158,6 +158,14 @@ def parse_args():
                    help="Lane goal supervision loss 가중치 (winner mode → nearest lane CE loss)")
     p.add_argument("--use_lane_anchor", action="store_true",
                    help="각 mode의 lane attention으로 trajectory anchor offset 추가 (구조적 방향 사전화)")
+    p.add_argument("--use_cond_query", action="store_true",
+                   help="LaneGoalHead mode query에 maneuver context 주입 (Turn/LC 차선 선택 개선)")
+    p.add_argument("--use_turn_emb", action="store_true",
+                   help="LaneGoalHead cross-attn KV에 차선 회전 유형 임베딩 추가 (none/left/right/u-turn)")
+    p.add_argument("--use_lane_graph", action="store_true",
+                   help="Joint transformer 출력 lane_feat에 기하학적 GAT 적용 (차선 연결성 인코딩)")
+    p.add_argument("--use_goal_gate", action="store_true",
+                   help="GoalCond+LaneGoal 결합 시 학습 가능한 게이트 사용 (하드 /2 대신)")
     return p.parse_args()
 
 
@@ -539,7 +547,9 @@ def main():
     else:
         model = RiskConditionedModel(d_model=args.d_model, K=6, n_layers=args.n_layers,
                                      n_heads=args.n_heads,
+                                     agent_dim=AGENT_DIM,
                                      map_dim=MAP_DIM,
+                                     traf_dim=TRAF_DIM,
                                      use_lane_mamba=use_lane_mamba,
                                      use_risk_prefix=use_risk_prefix,
                                      use_traj_fix=use_traj_fix,
@@ -549,7 +559,11 @@ def main():
                                      use_lane_anchor=args.use_lane_anchor,
                                      use_goal_cond=args.use_goal_cond,
                                      use_lane_goal=args.use_lane_goal,
+                                     use_cond_query=args.use_cond_query,
+                                     use_turn_emb=args.use_turn_emb,
                                      use_social_temporal=args.social_temporal,
+                                     use_lane_graph=args.use_lane_graph,
+                                     use_goal_gate=args.use_goal_gate,
                                      cond_dim=cond_dim).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.wd)

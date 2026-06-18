@@ -56,6 +56,8 @@ def parse_args():
     p.add_argument("--device", type=str,
                    default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--out_dir", type=str, default=ROOT)
+    p.add_argument("--goal_only", action="store_true",
+                   help="GoalCond 최적 모드(빨강) + GT(초록)만 표시. Baseline·서브모드 숨김")
     return p.parse_args()
 
 
@@ -143,7 +145,8 @@ def main():
     args   = parse_args()
     device = torch.device(args.device)
 
-    model_base, label_base = load_model(args.ckpt_base, use_goal_cond=False, device=device)
+    if not args.goal_only:
+        model_base, label_base = load_model(args.ckpt_base, use_goal_cond=False, device=device)
     model_goal, label_goal = load_model(args.ckpt_goal, use_goal_cond=True,  device=device)
 
     # ── val cache 스캔 ────────────────────────────────────────────────────────
@@ -209,18 +212,21 @@ def main():
     cond_t = torch.from_numpy(cond).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        pred_base = model_base(ego_h, soc, map_s, traf_t,
-                               risk_label=cond_t, gt_traj=None, tf_prob=0.0
-                               )["trajectory"][0].cpu().numpy()
+        if not args.goal_only:
+            pred_base = model_base(ego_h, soc, map_s, traf_t,
+                                   risk_label=cond_t, gt_traj=None, tf_prob=0.0
+                                   )["trajectory"][0].cpu().numpy()
         pred_goal = model_goal(ego_h, soc, map_s, traf_t,
                                risk_label=cond_t, gt_traj=None, tf_prob=0.0
                                )["trajectory"][0].cpu().numpy()
 
-    ade_base, fde_base = compute_minADE_FDE(pred_base, gt_traj, gt_valid)
+    if not args.goal_only:
+        ade_base, fde_base = compute_minADE_FDE(pred_base, gt_traj, gt_valid)
     ade_goal, fde_goal = compute_minADE_FDE(pred_goal, gt_traj, gt_valid)
 
     ego_hist_xy = agent[0, :, :2]
-    bk_base = best_k(pred_base, gt_traj, vi)
+    if not args.goal_only:
+        bk_base = best_k(pred_base, gt_traj, vi)
     bk_goal = best_k(pred_goal, gt_traj, vi)
 
     # speed label
@@ -229,10 +235,10 @@ def main():
     speed_tag = "Slow" if v < 5.0 else ("Medium" if v < 10.0 else "Fast")
     man_tag   = MANEUVER_NAMES[args.maneuver]
 
-    zx0, zx1, zy0, zy1 = compute_bounds([
-        gt_traj[vi], ego_hist_xy,
-        pred_base[bk_base][vi], pred_goal[bk_goal][vi],
-    ], margin=12)
+    bounds_trajs = [gt_traj[vi], ego_hist_xy, pred_goal[bk_goal][vi]]
+    if not args.goal_only:
+        bounds_trajs.append(pred_base[bk_base][vi])
+    zx0, zx1, zy0, zy1 = compute_bounds(bounds_trajs, margin=12)
 
     # ── 캔버스 ────────────────────────────────────────────────────────────────
     fig, (ax_full, ax_zoom) = plt.subplots(1, 2, figsize=(20, 8))
@@ -268,17 +274,27 @@ def main():
         add_time_ticks(ax, gt_traj, vi, "#2ca02c", zorder=9)
         add_arrow(ax, gt_traj, vi, "#2ca02c", zorder=9)
 
-        # Baseline
-        draw_model(ax, pred_base, gt_traj, vi,
-                   COLOR_BASE_BEST, COLORS_BASE_OTHER,
-                   f"Baseline  ADE={ade_base:.2f}m  FDE={fde_base:.2f}m",
-                   zorder_base=4)
+        # Baseline (goal_only 모드에서는 생략)
+        if not args.goal_only:
+            draw_model(ax, pred_base, gt_traj, vi,
+                       COLOR_BASE_BEST, COLORS_BASE_OTHER,
+                       f"Baseline  ADE={ade_base:.2f}m  FDE={fde_base:.2f}m",
+                       zorder_base=4)
 
         # GoalCond
-        draw_model(ax, pred_goal, gt_traj, vi,
-                   COLOR_GOAL_BEST, COLORS_GOAL_OTHER,
-                   f"GoalCond★  ADE={ade_goal:.2f}m  FDE={fde_goal:.2f}m",
-                   zorder_base=5)
+        if args.goal_only:
+            # best mode만, sub-mode 점선 없이
+            ax.plot(pred_goal[bk_goal][vi, 0], pred_goal[bk_goal][vi, 1],
+                    color=COLOR_GOAL_BEST, linewidth=2.5, linestyle="-",
+                    label=f"GoalCond★  ADE={ade_goal:.2f}m  FDE={fde_goal:.2f}m",
+                    zorder=7)
+            add_time_ticks(ax, pred_goal[bk_goal], vi, COLOR_GOAL_BEST, zorder=8)
+            add_arrow(ax, pred_goal[bk_goal], vi, COLOR_GOAL_BEST, zorder=9)
+        else:
+            draw_model(ax, pred_goal, gt_traj, vi,
+                       COLOR_GOAL_BEST, COLORS_GOAL_OTHER,
+                       f"GoalCond★  ADE={ade_goal:.2f}m  FDE={fde_goal:.2f}m",
+                       zorder_base=5)
 
         ax.set_aspect("equal", "box")
         ax.grid(True, alpha=0.2)
@@ -291,15 +307,17 @@ def main():
             ax.set_title("Zoom: trajectory area", fontsize=11)
             ax.text(0.02, 0.02, "● = 1 s interval (10 steps)",
                     transform=ax.transAxes, fontsize=8, color="gray", va="bottom")
-            extra = [
-                mpatches.Patch(color="#6baed6", alpha=0.7,
-                               label=f"Baseline other {pred_base.shape[0]-1} modes"),
-                mpatches.Patch(color="#fb6a4a", alpha=0.7,
-                               label=f"GoalCond other {pred_goal.shape[0]-1} modes"),
-            ]
             handles, labels = ax.get_legend_handles_labels()
-            ax.legend(handles + extra, labels + [p.get_label() for p in extra],
-                      loc="upper right", fontsize=9, framealpha=0.92)
+            if not args.goal_only:
+                extra = [
+                    mpatches.Patch(color="#6baed6", alpha=0.7,
+                                   label=f"Baseline other {pred_base.shape[0]-1} modes"),
+                    mpatches.Patch(color="#fb6a4a", alpha=0.7,
+                                   label=f"GoalCond other {pred_goal.shape[0]-1} modes"),
+                ]
+                handles += extra
+                labels  += [p.get_label() for p in extra]
+            ax.legend(handles, labels, loc="upper right", fontsize=9, framealpha=0.92)
         else:
             ax.set_title("Full map view", fontsize=11)
             from matplotlib.patches import Rectangle
@@ -312,18 +330,20 @@ def main():
     plt.tight_layout()
 
     import hashlib, time
-    h   = hashlib.md5(f"{sc_tag}{time.time()}".encode()).hexdigest()[:16]
-    out = os.path.join(args.out_dir, f"ablation_goal_cond_{h}.png")
+    h      = hashlib.md5(f"{sc_tag}{time.time()}".encode()).hexdigest()[:16]
+    suffix = "clean" if args.goal_only else "full"
+    out    = os.path.join(args.out_dir, f"ablation_goal_cond_{suffix}_{h}.png")
     fig.savefig(out, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
     print(f"\nSaved: {out}")
-    print(f"  Baseline  minADE={ade_base:.3f}m  minFDE={fde_base:.3f}m")
     print(f"  GoalCond  minADE={ade_goal:.3f}m  minFDE={fde_goal:.3f}m")
-    delta_ade = ade_base - ade_goal
-    delta_fde = fde_base - fde_goal
-    print(f"  ΔADE={delta_ade:+.3f}m  ΔFDE={delta_fde:+.3f}m  "
-          f"({'GoalCond 우세 ✓' if delta_ade > 0 else 'Baseline 우세'})")
+    if not args.goal_only:
+        print(f"  Baseline  minADE={ade_base:.3f}m  minFDE={fde_base:.3f}m")
+        delta_ade = ade_base - ade_goal
+        delta_fde = fde_base - fde_goal
+        print(f"  ΔADE={delta_ade:+.3f}m  ΔFDE={delta_fde:+.3f}m  "
+              f"({'GoalCond 우세 ✓' if delta_ade > 0 else 'Baseline 우세'})")
 
 
 if __name__ == "__main__":

@@ -51,6 +51,43 @@ MODELS = [
              use_lane_goal=True),
         "cond_labels",
     ),
+    (
+        "LaneGoal_v2",
+        "checkpoints/exp_lane_goal_v2/model_best.pt",
+        dict(cond_dim=9, use_lane_mamba=False, use_causal_attn=True,
+             use_lane_goal=True, use_cond_query=True),
+        "cond_labels",
+    ),
+    (
+        "LaneGoal_v3",
+        "checkpoints/exp_lane_goal_v3/model_best.pt",
+        dict(cond_dim=9, use_lane_mamba=False, use_causal_attn=True,
+             use_lane_goal=True, use_cond_query=True, use_turn_emb=True),
+        "cond_labels",
+    ),
+    (
+        "Combined",
+        "checkpoints/exp_goal_lane_combined/model_best.pt",
+        dict(cond_dim=9, use_lane_mamba=False, use_causal_attn=True,
+             use_goal_cond=True, use_lane_goal=True, use_cond_query=True),
+        "cond_labels",
+    ),
+    (
+        "LaneGraph",
+        "checkpoints/exp_lane_graph/model_best.pt",
+        dict(cond_dim=9, use_lane_mamba=False, use_causal_attn=True,
+             use_goal_cond=True, use_lane_goal=True, use_cond_query=True,
+             use_lane_graph=True),
+        "cond_labels",
+    ),
+    (
+        "GatedGoal",
+        "checkpoints/exp_gated_goal/model_best.pt",
+        dict(cond_dim=9, use_lane_mamba=False, use_causal_attn=True,
+             use_goal_cond=True, use_lane_goal=True, use_cond_query=True,
+             use_goal_gate=True),
+        "cond_labels",
+    ),
 ]
 
 

@@ -23,8 +23,9 @@ N_TRAF    = 6
 N_FUTURE  = 80    # frames 11..90
 KP_STEPS  = [9, 29, 49]   # 1s / 3s / 5s  (0-indexed into N_FUTURE)
 
-AGENT_DIM = 10   # x, y, vx, vy, cos_h, sin_h, valid_t, t_norm, type_v, type_c
-MAP_DIM   = 8    # x, y, dx_norm, dy_norm, type_lane, type_road_edge, type_road_line, type_special
+AGENT_DIM = 12   # x, y, vx, vy, cos_h, sin_h, valid_t, t_norm, type_v, type_c, len_norm, wid_norm
+MAP_DIM   = 10   # x, y, dx_norm, dy_norm, type_lane, type_road_edge, type_road_line, type_special, speed_lim_norm, lane_type_norm
+TRAF_DIM  = 3    # state, stop_x_ego, stop_y_ego
 
 
 def _world_to_ego(wx, wy, x0, y0, cos_h, sin_h):
@@ -46,12 +47,16 @@ def _direction_vecs(pts_xy: np.ndarray) -> np.ndarray:
 
 def _polyline_row(arr_xy: np.ndarray,
                   type_lane: float, type_road_edge: float,
-                  type_road_line: float, type_special: float) -> np.ndarray:
-    """Build [10, 8] map feature row from ego-relative xy [10, 2]."""
+                  type_road_line: float, type_special: float,
+                  speed_lim_norm: float = 0.0,
+                  lane_type_norm: float = 0.0) -> np.ndarray:
+    """Build [10, 10] map feature row from ego-relative xy [10, 2]."""
     dirs  = _direction_vecs(arr_xy)          # [10, 2]
-    flags = np.full((10, 4), [type_lane, type_road_edge, type_road_line, type_special],
+    flags = np.full((10, 6),
+                    [type_lane, type_road_edge, type_road_line, type_special,
+                     speed_lim_norm, lane_type_norm],
                     dtype=np.float32)
-    return np.concatenate([arr_xy, dirs, flags], axis=1)  # [10, 8]
+    return np.concatenate([arr_xy, dirs, flags], axis=1)  # [10, 10]
 
 
 def extract_features(scenario):
@@ -89,6 +94,14 @@ def extract_features(scenario):
         # TYPE_VEHICLE=1, TYPE_PEDESTRIAN=2, TYPE_CYCLIST=3
         type_v = float(track.object_type == 1)
         type_c = float(track.object_type == 3)
+        # bbox size from most-recent valid state (constant across time)
+        len_norm = wid_norm = 0.0
+        for t_ref in range(T_HIST - 1, -1, -1):
+            sr = track.states[t_ref]
+            if sr.valid and sr.length > 0:
+                len_norm = sr.length / 5.0
+                wid_norm = sr.width  / 2.0
+                break
         for t in range(T_HIST):
             s = track.states[t]
             if not s.valid:
@@ -103,23 +116,28 @@ def extract_features(scenario):
                 1.0,           # valid_t — model knows this frame has real data
                 t_norm,
                 type_v, type_c,
+                len_norm, wid_norm,
             ]
         agent_mask[slot] = True
 
     # ── map polylines [N_MAP, 10, MAP_DIM] ───────────────────────────────────
     scene_tensor = np.zeros((N_MAP, 10, MAP_DIM), dtype=np.float32)
     for i, feat in enumerate(list(scenario.map_features)[:N_MAP]):
-        pts           = None
-        type_lane     = 0.0
+        pts            = None
+        type_lane      = 0.0
         type_road_edge = 0.0
         type_road_line = 0.0
-        type_special  = 0.0
-        handled       = False
+        type_special   = 0.0
+        speed_lim_norm = 0.0
+        lane_type_norm = 0.0
+        handled        = False
 
         try:
             if feat.HasField("lane"):
-                pts       = feat.lane.polyline
-                type_lane = 1.0
+                pts            = feat.lane.polyline
+                type_lane      = 1.0
+                speed_lim_norm = feat.lane.speed_limit_mph / 60.0
+                lane_type_norm = feat.lane.type / 3.0   # 0=unknown,1=freeway,2=surface,3=bike
 
             elif feat.HasField("road_edge"):
                 pts            = feat.road_edge.polyline
@@ -174,13 +192,19 @@ def extract_features(scenario):
         arr_xy[:, 0]     = ex
         arr_xy[:, 1]     = ey
         scene_tensor[i]  = _polyline_row(arr_xy, type_lane, type_road_edge,
-                                         type_road_line, type_special)
+                                         type_road_line, type_special,
+                                         speed_lim_norm, lane_type_norm)
 
     # ── traffic signals ──────────────────────────────────────────────────────
-    traffic_tensor = np.zeros((N_TRAF, 1), dtype=np.float32)
+    traffic_tensor = np.zeros((N_TRAF, TRAF_DIM), dtype=np.float32)
     if len(scenario.dynamic_map_states) > t0:
         for j, ls in enumerate(scenario.dynamic_map_states[t0].lane_states[:N_TRAF]):
             traffic_tensor[j, 0] = float(ls.state)
+            sp = ls.stop_point
+            if sp.x != 0.0 or sp.y != 0.0:
+                sx, sy = _world_to_ego(sp.x, sp.y, x0, y0, cos_h, sin_h)
+                traffic_tensor[j, 1] = float(sx)
+                traffic_tensor[j, 2] = float(sy)
 
     # ── GT future trajectory (ego-relative) ─────────────────────────────────
     sdc_track     = scenario.tracks[sdc_idx]
