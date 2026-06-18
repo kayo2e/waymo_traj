@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 
-from src.models.encoders    import MultiStreamMambaEncoder
+from src.models.encoders    import MultiStreamMambaEncoder, LaneGraphEncoder
 from src.models.risk_fusion import RiskFusion
 
 
@@ -32,11 +32,15 @@ class LaneGoalHead(nn.Module):
     별도 lane_scorer가 [B, K, 50] logits를 출력해 auxiliary supervision 제공:
     winner mode는 GT endpoint에 가장 가까운 차선에 높은 점수를 줘야 함.
 
+    context (maneuver-conditioned global_feat)를 query에 더해
+    Turn/LC 같은 방향 전환 시 올바른 목적지 차선을 선택하도록 안내한다.
+
     Input : lane_feat   [B, 50, D]
+            context     [B, context_dim]  (optional, maneuver info 포함)
     Output: goals       [B, K, 2]   ego-relative goal positions
             lane_logits [B, K, 50]  per-mode lane scoring logits (for loss)
     """
-    def __init__(self, d_model, K, n_heads=4):
+    def __init__(self, d_model, K, n_heads=4, context_dim=None, use_turn_emb=False):
         super().__init__()
         self.K = K
         self.mode_queries = nn.Embedding(K, d_model)
@@ -44,13 +48,38 @@ class LaneGoalHead(nn.Module):
             d_model, n_heads, batch_first=True, dropout=0.1)
         self.out_proj     = nn.Linear(d_model, 2)
         self.lane_scorer  = nn.Linear(d_model, K)   # [B,50,D] → [B,50,K] → [B,K,50]
+        self.cond_proj = nn.Linear(context_dim, d_model) if context_dim is not None else None
+        # 4-class: 0=none, 1=left-turn, 2=right-turn, 3=u-turn
+        self.turn_emb = nn.Embedding(4, d_model) if use_turn_emb else None
 
-    def forward(self, lane_feat):
+    @staticmethod
+    def _lane_turn_type(map_scene):
+        """Classify each lane from polyline geometry: 0=none,1=left,2=right,3=u-turn."""
+        dx = map_scene[:, :, :, 2]                                       # [B, 50, 10]
+        dy = map_scene[:, :, :, 3]
+        a0 = torch.atan2(dy[:, :, 0],  dx[:, :, 0])                     # [B, 50]
+        a1 = torch.atan2(dy[:, :, -1], dx[:, :, -1])
+        delta = (a1 - a0 + torch.pi) % (2 * torch.pi) - torch.pi        # [-π, π]
+        t = torch.zeros(map_scene.shape[:2], dtype=torch.long,
+                        device=map_scene.device)
+        t[delta >  0.5] = 1   # left  (> ~29°)
+        t[delta < -0.5] = 2   # right
+        t[delta.abs() > 2.0] = 3   # u-turn (> ~115°)
+        is_lane = map_scene[:, :, 0, 4] > 0.5                            # type_lane flag
+        t = t * is_lane.long()
+        return t
+
+    def forward(self, lane_feat, context=None, map_scene=None):
         B = lane_feat.shape[0]
         q = self.mode_queries.weight.unsqueeze(0).expand(B, -1, -1)   # [B, K, D]
-        out, _ = self.cross_attn(q, lane_feat, lane_feat)              # [B, K, D]
+        if context is not None and self.cond_proj is not None:
+            q = q + self.cond_proj(context).unsqueeze(1)               # [B, K, D]
+        kv = lane_feat
+        if map_scene is not None and self.turn_emb is not None:
+            kv = lane_feat + self.turn_emb(self._lane_turn_type(map_scene))
+        out, _ = self.cross_attn(q, kv, kv)                            # [B, K, D]
         goals       = self.out_proj(out)                                # [B, K, 2]
-        lane_logits = self.lane_scorer(lane_feat).permute(0, 2, 1)    # [B, K, 50]
+        lane_logits = self.lane_scorer(kv).permute(0, 2, 1)            # [B, K, 50]
         return goals, lane_logits
 
 
@@ -130,7 +159,7 @@ class RiskConditionedModel(nn.Module):
       lane_prob    : [B, 50] or None
     """
 
-    def __init__(self, agent_dim: int = 10, map_dim: int = 8,
+    def __init__(self, agent_dim: int = 10, map_dim: int = 8, traf_dim: int = 1,
                  d_model: int = 128, K: int = 6, n_layers: int = 2,
                  n_heads: int = 4,
                  ar_hidden: int = 256,
@@ -143,7 +172,11 @@ class RiskConditionedModel(nn.Module):
                  use_lane_anchor: bool = False,
                  use_goal_cond: bool = False,
                  use_lane_goal: bool = False,
+                 use_cond_query: bool = False,
+                 use_turn_emb: bool = False,
                  use_social_temporal: bool = False,
+                 use_lane_graph: bool = False,
+                 use_goal_gate: bool = False,
                  cond_dim: int = 3):
         super().__init__()
         self.K                = K
@@ -156,19 +189,26 @@ class RiskConditionedModel(nn.Module):
         self.use_lane_anchor    = use_lane_anchor
         self.use_goal_cond      = use_goal_cond
         self.use_lane_goal      = use_lane_goal
+        self.use_cond_query     = use_cond_query
+        self.use_turn_emb       = use_turn_emb
+        self.use_lane_graph     = use_lane_graph
+        self.use_goal_gate      = use_goal_gate
         self.cond_dim           = cond_dim
         D = d_model
         H = ar_hidden
 
         # ── 인코더 → (global_feat [B,D], lane_feat [B,50,D]) ──────────────────
         self.encoder = MultiStreamMambaEncoder(
-            agent_dim, map_dim, D, n_layers,
+            agent_dim, map_dim, traf_dim, D, n_layers,
             n_heads=n_heads,
             use_risk_prefix=use_risk_prefix,
             use_traj_fix=use_traj_fix,
             cond_dim=cond_dim,
             use_social_temporal=use_social_temporal,
         )
+
+        if use_lane_graph:
+            self.lane_graph_enc = LaneGraphEncoder(D, n_heads=n_heads, n_layers=2)
 
         if use_risk_prefix:
             self.context_proj = nn.Linear(D, D * 2)
@@ -210,7 +250,12 @@ class RiskConditionedModel(nn.Module):
             if use_goal_cond:
                 self.goal_head = GoalHead(D * 2, K)
             if use_lane_goal:
-                self.lane_goal_head = LaneGoalHead(D, K, n_heads=n_heads)
+                ctx_dim = D * 2 if use_cond_query else None
+                self.lane_goal_head = LaneGoalHead(
+                    D, K, n_heads=n_heads, context_dim=ctx_dim,
+                    use_turn_emb=use_turn_emb)
+            if use_goal_cond and use_lane_goal and use_goal_gate:
+                self.goal_gate = nn.Linear(D * 2, 1)
             if use_any_goal:
                 self.goal_proj = nn.Linear(2, D)
         else:
@@ -362,6 +407,9 @@ class RiskConditionedModel(nn.Module):
             risk_label=risk_label,
         )
 
+        if self.use_lane_graph:
+            lane_feat = self.lane_graph_enc(lane_feat, map_scene)
+
         # 2. risk conditioning 방식 분기
         if self.use_risk_prefix:
             risk_logits = None
@@ -405,8 +453,15 @@ class RiskConditionedModel(nn.Module):
             if self.use_goal_cond:
                 goals = self.goal_head(context)                          # [B, K, 2]
             if self.use_lane_goal:
-                lane_goals, lane_goal_logits = self.lane_goal_head(lane_feat)
-                goals = (goals + lane_goals) / 2 if goals is not None else lane_goals
+                lane_goals, lane_goal_logits = self.lane_goal_head(
+                    lane_feat, context=context, map_scene=map_scene)
+                if goals is not None and hasattr(self, "goal_gate"):
+                    gate = torch.sigmoid(self.goal_gate(context)).unsqueeze(1)  # [B,1,1]
+                    goals = gate * goals + (1 - gate) * lane_goals
+                elif goals is not None:
+                    goals = (goals + lane_goals) / 2
+                else:
+                    goals = lane_goals
             traj, lane_attn_w = self._causal_decode(
                 context, mode_emb, lane_feat, goals=goals, T=80)           # [B, K, 80, 2], None
         else:
